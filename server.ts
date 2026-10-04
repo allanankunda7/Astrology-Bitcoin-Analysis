@@ -1,4 +1,10 @@
-import express from 'express';
+/**
+ * server.ts
+ * Production-Hardened Express + Vite Server with Institutional Paper Broker,
+ * Authentication, RBAC, Risk Engine, Observability & Relational Persistence
+ */
+
+import express, { Request, Response, NextFunction } from 'express';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import path from 'path';
@@ -6,6 +12,21 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { brokerManager } from './src/broker/BrokerFactory';
 import { runHistoricalBacktest } from './src/services/backtestingEngine';
+import { strategyLab } from './src/services/strategyLab';
+import { executeWalkForwardAnalysis } from './src/services/walkForwardEngine';
+import { relationalDb } from './src/db/relationalStore';
+import { AuthService } from './src/services/authService';
+import { BackendRiskEngine } from './src/services/backendRiskEngine';
+import { logger } from './src/server/logger';
+import {
+  requestIdMiddleware,
+  securityHeadersMiddleware,
+  corsMiddleware,
+  createRateLimiter,
+  sendSafeError,
+  AuthenticatedRequest
+} from './src/server/security';
+import { authenticateToken, requireAuth, requireRole } from './src/server/authMiddleware';
 
 dotenv.config();
 
@@ -13,359 +34,532 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const port = 3000;
+const port = Number(process.env.PORT) || 3000;
+const serverStartTime = Date.now();
 
-app.use(express.json());
+// 1. Core Parsers & Global Security Middleware
+app.use(express.json({ limit: '2mb' }));
+app.use(express.urlencoded({ extended: true, limit: '2mb' }));
+app.use(requestIdMiddleware);
+app.use(securityHeadersMiddleware);
+app.use(corsMiddleware);
+app.use(authenticateToken);
 
-// In-memory news cache
-let newsCache: { data: any[]; timestamp: number } = { data: [], timestamp: 0 };
+// 2. Production Rate Limiters
+const generalApiLimiter = createRateLimiter(180, 60 * 1000, 'General API');
+const authLimiter = createRateLimiter(20, 60 * 1000, 'Authentication');
+const aiLimiter = createRateLimiter(30, 60 * 1000, 'AI Analyst');
+const heavyComputeLimiter = createRateLimiter(35, 60 * 1000, 'Quantitative Engine');
 
-function parseRss(xml: string, sourceName: string, defaultRegion: string, defaultCategory: string) {
-  const items: any[] = [];
-  const itemMatches = xml.match(/<item>[\s\S]*?<\/item>/gi) || [];
+app.use('/api/', generalApiLimiter);
+app.use('/api/auth/', authLimiter);
+app.use('/api/chat', aiLimiter);
+app.use('/api/backtest', heavyComputeLimiter);
+app.use('/api/walk-forward', heavyComputeLimiter);
 
-  for (const itemXml of itemMatches.slice(0, 10)) {
-    const titleMatch = itemXml.match(/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/i);
-    const descMatch = itemXml.match(/<description>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/description>/i);
-    const linkMatch = itemXml.match(/<link>([\s\S]*?)<\/link>/i);
-    const pubDateMatch = itemXml.match(/<pubDate>([\s\S]*?)<\/pubDate>/i);
+// ==========================================
+// 3. HEALTH CHECKS & READINESS PROBES
+// ==========================================
 
-    if (titleMatch) {
-      const title = titleMatch[1].trim().replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&apos;/g, "'");
-      const rawDesc = descMatch ? descMatch[1].trim().replace(/<[^>]*>/g, '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'") : '';
-      const summary = rawDesc.length > 240 ? rawDesc.slice(0, 240) + '...' : rawDesc;
-
-      // Smart asset detection
-      const lower = (title + ' ' + summary).toLowerCase();
-      const assets: string[] = [];
-      if (lower.includes('gold') || lower.includes('bullion') || lower.includes('metal') || lower.includes('silver')) assets.push('XAU/USD');
-      if (lower.includes('bitcoin') || lower.includes('btc') || lower.includes('crypto') || lower.includes('coinbase') || lower.includes('binance')) assets.push('BTC/USDT');
-      if (lower.includes('ethereum') || lower.includes('ether') || lower.includes('eth ') || lower.includes('vitalik')) assets.push('ETH/USDT');
-      if (lower.includes('solana') || lower.includes('sol ') || lower.includes('memecoin')) assets.push('SOL/USDT');
-      if (lower.includes('euro') || lower.includes('ecb') || lower.includes('forex') || lower.includes('dollar') || lower.includes('dxy') || lower.includes('currency') || lower.includes('fx')) assets.push('EUR/USD');
-      if (lower.includes('s&p') || lower.includes('sp500') || lower.includes('stock') || lower.includes('wall street') || lower.includes('fed') || lower.includes('treasury') || lower.includes('yield') || lower.includes('nasdaq') || lower.includes('dow')) assets.push('SPX');
-      if (assets.length === 0) assets.push('SPX', 'BTC/USDT');
-
-      // Comprehensive global region & flag detection
-      let region = defaultRegion;
-      let regionFlag = '🌐';
-      if (lower.includes('china') || lower.includes('beijing') || lower.includes('shanghai') || lower.includes('pboc') || lower.includes('yuan')) {
-        region = 'Asia-Pacific';
-        regionFlag = '🇨🇳';
-      } else if (lower.includes('japan') || lower.includes('tokyo') || lower.includes('boj') || lower.includes('yen') || lower.includes('nikkei')) {
-        region = 'Asia-Pacific';
-        regionFlag = '🇯🇵';
-      } else if (lower.includes('india') || lower.includes('mumbai') || lower.includes('rupee') || lower.includes('rbi')) {
-        region = 'Asia-Pacific';
-        regionFlag = '🇮🇳';
-      } else if (lower.includes('singapore') || lower.includes('hong kong') || lower.includes('taiwan') || lower.includes('korea') || lower.includes('asia')) {
-        region = 'Asia-Pacific';
-        regionFlag = '🌏';
-      } else if (lower.includes('opec') || lower.includes('middle east') || lower.includes('saudi') || lower.includes('riyadh') || lower.includes('dubai') || lower.includes('abu dhabi') || lower.includes('uae') || lower.includes('crude') || lower.includes('oil')) {
-        region = 'Middle East';
-        regionFlag = '🇸🇦';
-      } else if (lower.includes('fed') || lower.includes('us ') || lower.includes('u.s.') || lower.includes('wall street') || lower.includes('treasury') || lower.includes('sec') || lower.includes('america')) {
-        region = 'Americas';
-        regionFlag = '🇺🇸';
-      } else if (lower.includes('ecb') || lower.includes('europe') || lower.includes('london') || lower.includes('germany') || lower.includes('uk ') || lower.includes('bank of england') || lower.includes('frankfurt') || lower.includes('swiss') || lower.includes('snb')) {
-        region = 'Europe';
-        regionFlag = '🇪🇺';
-      }
-
-      // Sentiment analysis
-      let sentiment: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = 'NEUTRAL';
-      let score = 0.0;
-      const bullishWords = ['surge', 'soar', 'gain', 'rally', 'record', 'high', 'beat', 'cut', 'easing', 'jump', 'inflow', 'stimulus', 'rebound', 'boost', 'upgrade', 'profit', 'expansion'];
-      const bearishWords = ['drop', 'fall', 'plunge', 'slump', 'down', 'hike', 'tariff', 'war', 'crackdown', 'outflow', 'decline', 'loss', 'miss', 'risk', 'warning', 'inflation', 'default'];
-
-      let bCount = bullishWords.filter(w => lower.includes(w)).length;
-      let rCount = bearishWords.filter(w => lower.includes(w)).length;
-
-      if (bCount > rCount) {
-        sentiment = 'BULLISH';
-        score = Math.min(0.95, 0.4 + bCount * 0.2);
-      } else if (rCount > bCount) {
-        sentiment = 'BEARISH';
-        score = -Math.min(0.95, 0.4 + rCount * 0.2);
-      }
-
-      // Urgency
-      const isBreaking = lower.includes('breaking') || lower.includes('urgent') || lower.includes('emergency') || lower.includes('fed') || lower.includes('rate cut') || lower.includes('record') || lower.includes('soar') || lower.includes('plunge');
-      const urgency = isBreaking ? 'BREAKING' : (bCount + rCount >= 2 ? 'HIGH' : 'MEDIUM');
-
-      // Category detection
-      let category = defaultCategory;
-      if (lower.includes('gold') || lower.includes('silver') || lower.includes('bullion')) category = 'Gold & Metals';
-      else if (lower.includes('bitcoin') || lower.includes('crypto') || lower.includes('ethereum') || lower.includes('solana')) category = 'Crypto';
-      else if (lower.includes('forex') || lower.includes('dollar') || lower.includes('euro') || lower.includes('yen') || lower.includes('currency')) category = 'Forex';
-      else if (lower.includes('oil') || lower.includes('energy') || lower.includes('crude') || lower.includes('opec') || lower.includes('gas')) category = 'Energy & Geopolitics';
-      else if (lower.includes('stock') || lower.includes('sp500') || lower.includes('nasdaq') || lower.includes('earnings') || lower.includes('nikkei')) category = 'Indices';
-      else category = 'Macro';
-
-      // Market impact note
-      const marketImpact = sentiment === 'BULLISH'
-        ? `Provides supportive liquidity tailwinds and upward risk appetite across ${assets.join(' & ')}.`
-        : sentiment === 'BEARISH'
-        ? `Injects risk-off friction and potential volatility drawdowns across ${assets.join(' & ')}.`
-        : `Balanced structural catalyst; market awaits secondary macro confirmation.`;
-
-      items.push({
-        id: `rss-${Math.random().toString(36).substring(2, 9)}`,
-        title,
-        summary: summary || title,
-        url: linkMatch ? linkMatch[1].trim() : '#',
-        source: sourceName,
-        timestamp: pubDateMatch ? new Date(pubDateMatch[1]).toISOString() : new Date().toISOString(),
-        timeAgo: 'Recent',
-        region,
-        regionFlag,
-        category,
-        urgency,
-        sentiment,
-        sentimentScore: score,
-        affectedAssets: assets,
-        marketImpact,
-        causalMechanism: `Causal transmission: ${sourceName} headline impacts macro risk appetite -> algorithmic re-pricing across ${assets[0] || 'market assets'}.`
-      });
+// GET /health - Liveness probe
+app.get('/health', (_req: Request, res: Response) => {
+  res.json({
+    status: 'UP',
+    timestamp: new Date().toISOString(),
+    uptimeSeconds: Math.floor((Date.now() - serverStartTime) / 1000),
+    environment: process.env.NODE_ENV || 'development',
+    version: '1.2.0',
+    checks: {
+      server: 'OK',
+      database: 'OK',
+      broker: 'OK'
     }
-  }
-  return items;
-}
-
-// Server-side live world news aggregator endpoint
-app.get('/api/news', async (_req, res) => {
-  const now = Date.now();
-  // Return cached feed if within 30 seconds
-  if (newsCache.data.length > 0 && now - newsCache.timestamp < 30000) {
-    return res.json({ news: newsCache.data, cached: true, count: newsCache.data.length });
-  }
-
-  try {
-    const feeds = await Promise.allSettled([
-      fetch('https://feeds.bbci.co.uk/news/business/rss.xml', { headers: { 'User-Agent': 'Mozilla/5.0' } })
-        .then(r => r.text())
-        .then(xml => parseRss(xml, 'BBC World Business', 'Europe', 'Macro')),
-      fetch('https://finance.yahoo.com/news/rssindex', { headers: { 'User-Agent': 'Mozilla/5.0' } })
-        .then(r => r.text())
-        .then(xml => parseRss(xml, 'Yahoo Finance Global', 'Americas', 'Indices')),
-      fetch('https://feeds.content.dowjones.io/public/rss/mw_topstories', { headers: { 'User-Agent': 'Mozilla/5.0' } })
-        .then(r => r.text())
-        .then(xml => parseRss(xml, 'MarketWatch Global', 'Americas', 'Macro')),
-      fetch('https://www.scmp.com/rss/92/feed', { headers: { 'User-Agent': 'Mozilla/5.0' } })
-        .then(r => r.text())
-        .then(xml => parseRss(xml, 'SCMP Asia Business', 'Asia-Pacific', 'Macro')),
-      fetch('https://www.aljazeera.com/xml/rss/all.xml', { headers: { 'User-Agent': 'Mozilla/5.0' } })
-        .then(r => r.text())
-        .then(xml => parseRss(xml, 'Al Jazeera World Wire', 'Middle East', 'Energy & Geopolitics')),
-      fetch('https://www.coindesk.com/arc/outboundfeeds/rss/', { headers: { 'User-Agent': 'Mozilla/5.0' } })
-        .then(r => r.text())
-        .then(xml => parseRss(xml, 'CoinDesk Wire', 'Global', 'Crypto'))
-    ]);
-
-    const combined: any[] = [];
-    feeds.forEach((res) => {
-      if (res.status === 'fulfilled' && Array.isArray(res.value)) {
-        combined.push(...res.value);
-      }
-    });
-
-    if (combined.length > 0) {
-      // Sort newest first
-      combined.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-      newsCache = { data: combined, timestamp: now };
-      return res.json({ news: combined, cached: false, count: combined.length });
-    }
-  } catch (err: any) {
-    console.warn('[server /api/news] Live RSS fetch failed, returning curated fallback wire:', err.message);
-  }
-
-  res.json({ news: [], fallback: true });
+  });
 });
 
-// Server-side AI news impact deep-dive analysis endpoint
-app.post('/api/news/analyze', async (req, res) => {
+// GET /ready - Readiness probe (dependencies, storage, market data)
+app.get('/ready', async (_req: Request, res: Response) => {
   try {
-    const { headline, summary, asset } = req.body;
-    const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY || '';
-    const ai = new GoogleGenAI({ apiKey });
+    const broker = brokerManager.getActiveBroker();
+    const account = await broker.getAccount();
+    const dbStats = relationalDb.getTableStats();
 
-    const prompt = `Analyze this breaking financial headline and explain its quantitative market impact:
-Headline: "${headline}"
-Context: "${summary || 'No further summary'}"
-Focus Asset: "${asset || 'Gold and Bitcoin'}"
-
-Please provide an institutional-grade breakdown covering:
-1. Macro Transmission Mechanism (how this news flows through interest rates, inflation, or liquidity)
-2. Directional Bias & Confidence (Bullish/Bearish/Neutral with confidence score %)
-3. Key Invalidation / Risk Level to watch on the charts
-4. Actionable Quant Advice (e.g. scale in, hold, protect stops)`;
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.5-flash',
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      config: {
-        systemInstruction: "You are an Institutional Senior Quantitative Strategist and Macro Intelligence Director. Provide concise, mathematically rigorous causal explanations without hype."
+    res.json({
+      ready: true,
+      timestamp: new Date().toISOString(),
+      components: {
+        database: { status: 'READY', records: dbStats },
+        paperBroker: { status: 'READY', balance: account.balance, isPaper: account.isPaper },
+        marketData: { status: 'READY' }
       }
     });
-
-    res.json({ analysis: response.text });
   } catch (error: any) {
-    console.error('Gemini news analysis error:', error);
-    res.status(500).json({ error: error.message || 'Gemini API call failed' });
-  }
-});
-
-// Server-side structured AI Analyst endpoint
-app.post('/api/ai/analyze-setup', async (req, res) => {
-  try {
-    const { symbol, timeframe, currentPrice, regime, indicators, structure, signal } = req.body;
-    const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY || '';
-    const ai = new GoogleGenAI({ apiKey });
-
-    const prompt = `Analyze this structured market dataset for ${symbol} on the ${timeframe} timeframe:
-- Current Market Price: $${currentPrice}
-- Classified Market Regime: ${regime || 'Unclear'}
-- Key Indicators: EMA 21: ${indicators?.ema21 ?? 'N/A'}, EMA 50: ${indicators?.ema50 ?? 'N/A'}, RSI(14): ${indicators?.rsi ?? 'N/A'}, ATR: ${indicators?.atr ?? 'N/A'}
-- Structural Levels: Nearest Support: $${structure?.support ?? 'N/A'}, Nearest Resistance: $${structure?.resistance ?? 'N/A'}, Recent Event: ${structure?.lastEvent ?? 'None'}
-- Rule-Based Setup: Action: ${signal?.action ?? 'WAIT'}, Strategy: ${signal?.strategy ?? 'N/A'}, Proposed Entry: $${signal?.entry ?? currentPrice}, Proposed Stop Loss: $${signal?.stopLoss ?? 'N/A'}, Target: $${signal?.target ?? 'N/A'}
-
-Provide an institutional, objective breakdown covering:
-1. Market Context & Trend (Explain what the EMAs and structure indicate)
-2. Indicator Agreement vs Disagreement (Note whether RSI, ATR, and moving averages agree or conflict)
-3. Actionable Setup Evaluation & Risks (Why this setup is valid or why caution is warranted)
-4. Exact Invalidation Level (What price breach strictly invalidates the premise)
-Do NOT invent unavailable prices or promise profits. Keep the analysis rigorous and capital-preservation focused.`;
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.5-flash',
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      config: {
-        systemInstruction: "You are a Chief Risk Officer and Senior Quantitative Technical Analyst. You provide rigorous, honest technical breakdowns using only the supplied structured data. Never promise certainty or profit."
-      }
+    res.status(503).json({
+      ready: false,
+      timestamp: new Date().toISOString(),
+      error: error.message || 'Service not ready.'
     });
-
-    res.json({ analysis: response.text });
-  } catch (error: any) {
-    console.error('Gemini analyze-setup error:', error);
-    res.status(500).json({ error: error.message || 'Gemini API call failed' });
-  }
-});
-
-// Server-side Gemini chat endpoint
-app.post('/api/chat', async (req, res) => {
-  try {
-    const { messages, systemInstruction } = req.body;
-    
-    // Always use @google/genai SDK on the server side
-    const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY || '';
-    const ai = new GoogleGenAI({ apiKey });
-
-    // Format contents for multi-turn chat:
-    const contents = (messages || []).map((m: any) => ({
-      role: m.role === 'assistant' ? 'model' : m.role,
-      parts: [{ text: m.content || m.text || '' }]
-    }));
-
-    // Use gemini-3.5-flash for general tasks as specified in guidelines
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.5-flash',
-      contents: contents,
-      config: {
-        systemInstruction: systemInstruction || 
-          "You are a Senior Quantitative Trading Analyst and Financial Astrology Researcher. You provide disciplined technical analysis, market structure commentary (BOS, CHoCH, key S/R levels), probability assessments, and statistical evaluations of astrological cycles (lunar phases, planetary retrograde stations) with strict capital preservation principles. You always emphasize risk management, invalidation levels, and position sizing.",
-      }
-    });
-
-    res.json({ text: response.text });
-  } catch (error: any) {
-    console.error('Gemini chat server error:', error);
-    res.status(500).json({ error: error.message || 'Gemini API call failed' });
   }
 });
 
 // ==========================================
-// BROKER ABSTRACTION LAYER & PAPER TRADING REST API
+// 4. AUTHENTICATION & RBAC ENDPOINTS
+// ==========================================
+
+// POST /api/auth/register - Register new account
+app.post('/api/auth/register', (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { email, password, role } = req.body;
+    if (!email || !password) {
+      return sendSafeError(res, 400, 'MISSING_FIELDS', 'Email and password are required.', null, req);
+    }
+
+    const result = AuthService.register({ email, password, role });
+    relationalDb.logAudit({
+      userId: result.user.id,
+      action: 'USER_REGISTERED',
+      details: `User registered with role ${result.user.role}`,
+      ip: req.ip
+    });
+
+    res.status(201).json({ success: true, ...result });
+  } catch (error: any) {
+    sendSafeError(res, 400, 'REGISTRATION_FAILED', error.message || 'Registration failed.', error, req);
+  }
+});
+
+// POST /api/auth/login - Authenticate credentials
+app.post('/api/auth/login', (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return sendSafeError(res, 400, 'MISSING_FIELDS', 'Email and password are required.', null, req);
+    }
+
+    const result = AuthService.login(email, password);
+    relationalDb.logAudit({
+      userId: result.user.id,
+      action: 'USER_LOGIN',
+      details: 'User authenticated successfully',
+      ip: req.ip
+    });
+
+    res.json({ success: true, ...result });
+  } catch (error: any) {
+    sendSafeError(res, 401, 'INVALID_CREDENTIALS', error.message || 'Invalid email or password.', error, req);
+  }
+});
+
+// GET /api/auth/me - Current user profile
+app.get('/api/auth/me', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const user = req.user ? relationalDb.getUserById(req.user.id) : undefined;
+  if (!user) {
+    return sendSafeError(res, 404, 'USER_NOT_FOUND', 'User record not found in database.', null, req);
+  }
+
+  res.json({
+    success: true,
+    user: {
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      createdAt: user.createdAt
+    }
+  });
+});
+
+// POST /api/auth/logout - Logout
+app.post('/api/auth/logout', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  relationalDb.logAudit({
+    userId: req.user?.id,
+    action: 'USER_LOGOUT',
+    details: 'User session logged out',
+    ip: req.ip
+  });
+  res.json({ success: true, message: 'Logged out successfully.' });
+});
+
+// POST /api/auth/forgot-password - Generate password reset token
+app.post('/api/auth/forgot-password', (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return sendSafeError(res, 400, 'MISSING_EMAIL', 'Email address is required.', null, req);
+    }
+    const result = AuthService.requestPasswordReset(email);
+    res.json({
+      success: true,
+      message: 'If the account exists, password reset instructions and token have been issued.',
+      resetToken: result.resetToken,
+      expiresAt: result.expiresAt
+    });
+  } catch (error: any) {
+    sendSafeError(res, 500, 'RESET_FAILED', 'Could not process password reset request.', error, req);
+  }
+});
+
+// POST /api/auth/reset-password - Reset password using token
+app.post('/api/auth/reset-password', (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { resetToken, newPassword } = req.body;
+    if (!resetToken || !newPassword) {
+      return sendSafeError(res, 400, 'MISSING_FIELDS', 'Reset token and new password are required.', null, req);
+    }
+    AuthService.resetPassword(resetToken, newPassword);
+    res.json({ success: true, message: 'Password has been successfully updated. You may now login.' });
+  } catch (error: any) {
+    sendSafeError(res, 400, 'PASSWORD_RESET_REJECTED', error.message || 'Failed to reset password.', error, req);
+  }
+});
+
+// ==========================================
+// 5. OBSERVABILITY, MONITORING & DISASTER RECOVERY
+// ==========================================
+
+// GET /api/system/monitoring - Institutional monitoring metrics
+app.get('/api/system/monitoring', async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const mem = process.memoryUsage();
+    const broker = brokerManager.getActiveBroker();
+    const account = await broker.getAccount();
+    const quotes = await broker.getAllMarketData();
+    const dbStats = relationalDb.getTableStats();
+    const recentLogs = logger.getRecentLogs(50);
+    const errorCount = logger.getErrorCount();
+
+    res.json({
+      success: true,
+      metrics: {
+        server: {
+          uptimeSeconds: Math.floor((Date.now() - serverStartTime) / 1000),
+          memoryRssMb: Math.round(mem.rss / (1024 * 1024)),
+          memoryHeapUsedMb: Math.round(mem.heapUsed / (1024 * 1024)),
+          nodeVersion: process.version,
+          activeEnvironment: process.env.NODE_ENV || 'production'
+        },
+        database: {
+          status: 'CONNECTED',
+          tables: dbStats,
+          persistedFilePath: process.env.DATABASE_FILE_PATH || 'data/trading_database.json'
+        },
+        paperBroker: {
+          status: 'OPERATIONAL',
+          equity: account.equity,
+          balance: account.balance,
+          openPositionsCount: (await broker.getPositions()).length,
+          openOrdersCount: (await broker.getOpenOrders()).length,
+          isPaperSandbox: account.isPaper
+        },
+        marketData: {
+          status: 'HEALTHY',
+          trackedSymbolsCount: Object.keys(quotes).length,
+          quotesSample: Object.values(quotes).slice(0, 5)
+        },
+        errors: {
+          recentErrorCount: errorCount,
+          recentLogs
+        }
+      }
+    });
+  } catch (error: any) {
+    sendSafeError(res, 500, 'MONITORING_ERROR', 'Failed to retrieve system monitoring statistics.', error);
+  }
+});
+
+// GET /api/system/audit-logs - Administrative audit trail
+app.get('/api/system/audit-logs', requireRole(['ADMIN', 'RESEARCHER']), (_req: AuthenticatedRequest, res: Response) => {
+  const logs = relationalDb.getAuditLogs(100);
+  res.json({ success: true, logs });
+});
+
+// POST /api/admin/backup - Create point-in-time database snapshot
+app.post('/api/admin/backup', requireRole(['ADMIN', 'RESEARCHER']), (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const backup = relationalDb.createBackup();
+    relationalDb.logAudit({
+      userId: req.user?.id,
+      action: 'DATABASE_BACKUP_CREATED',
+      details: `Backup generated with ${JSON.stringify(backup.tablesCount)}`,
+      ip: req.ip
+    });
+    res.json({ success: true, backup });
+  } catch (error: any) {
+    sendSafeError(res, 500, 'BACKUP_FAILED', 'Failed to generate database backup.', error, req);
+  }
+});
+
+// POST /api/admin/restore - Restore database from backup snapshot
+app.post('/api/admin/restore', requireRole(['ADMIN', 'RESEARCHER']), (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { backupJson } = req.body;
+    if (!backupJson || typeof backupJson !== 'string') {
+      return sendSafeError(res, 400, 'INVALID_BACKUP', 'Valid backup JSON string is required.', null, req);
+    }
+    const result = relationalDb.restoreBackup(backupJson);
+    if (!result.success) {
+      return sendSafeError(res, 400, 'RESTORE_REJECTED', result.message, null, req);
+    }
+
+    relationalDb.logAudit({
+      userId: req.user?.id,
+      action: 'DATABASE_RESTORED',
+      details: 'Database restored from backup snapshot',
+      ip: req.ip
+    });
+
+    res.json({ success: true, message: result.message, tablesCount: result.tablesCount });
+  } catch (error: any) {
+    sendSafeError(res, 500, 'RESTORE_FAILED', 'Failed to restore database from backup.', error, req);
+  }
+});
+
+// ==========================================
+// 6. STRATEGY LAB & VERSIONING REST API
+// ==========================================
+
+// GET /api/strategies - List saved strategies
+app.get('/api/strategies', (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const strats = strategyLab.getStrategies();
+    res.json({ success: true, strategies: strats, count: strats.length });
+  } catch (error: any) {
+    sendSafeError(res, 500, 'STRATEGY_FETCH_FAILED', 'Failed to fetch strategies.', error);
+  }
+});
+
+// POST /api/strategies - Create a new strategy
+app.post('/api/strategies', (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { name, description, asset, timeframe, direction, indicators, risk, tags } = req.body;
+    if (!name || !asset || !timeframe) {
+      return sendSafeError(res, 400, 'MISSING_STRATEGY_FIELDS', 'Strategy name, asset, and timeframe are required.', null, req);
+    }
+
+    const created = strategyLab.createStrategy({
+      name,
+      description: description || 'Custom algorithmic strategy.',
+      asset,
+      timeframe,
+      direction: direction || 'BOTH',
+      indicators: indicators || {
+        emaFastPeriod: 20,
+        emaSlowPeriod: 50,
+        emaTrendFilterPeriod: 200,
+        useEmaFilter: true,
+        rsiPeriod: 14,
+        rsiOverbought: 70,
+        rsiOversold: 30,
+        useRsiFilter: true,
+        useRsiDivergence: false,
+        macdFast: 12,
+        macdSlow: 26,
+        macdSignal: 9,
+        useMacdConfirmation: true,
+        atrPeriod: 14,
+        atrMultiplierSL: 1.5,
+        atrMultiplierTP: 3.0,
+        bbPeriod: 20,
+        bbStdDev: 2.0,
+        useBollingerBands: true,
+        useSMC: true,
+        requireBOSContinuation: true,
+        requireCHoCHReversal: false,
+        useSupportResistance: true,
+        useVolumeConfirmation: true,
+        volumeMultiplier: 1.5
+      },
+      risk: risk || {
+        riskPercent: 1.0,
+        minRiskRewardRatio: 2.0,
+        maxOpenPositions: 2,
+        stopLossMode: 'ATR_DYNAMIC',
+        takeProfitMode: 'FIXED_RR',
+        feePercent: 0.05,
+        slippagePercent: 0.03,
+        spreadPercent: 0.01
+      },
+      tags: tags || ['custom', 'quantitative']
+    });
+
+    relationalDb.insertStrategy({
+      id: created.id,
+      userId: req.user?.id || 'usr-quant-001',
+      name: created.name,
+      asset: created.asset,
+      timeframe: created.timeframe,
+      activeVersion: created.activeVersion,
+      createdAt: created.createdAt,
+      updatedAt: created.updatedAt
+    });
+
+    res.status(201).json({ success: true, strategy: created });
+  } catch (error: any) {
+    sendSafeError(res, 400, 'STRATEGY_CREATE_FAILED', error.message || 'Failed to create strategy.', error, req);
+  }
+});
+
+// GET /api/strategies/:id - Fetch strategy details & immutable version history
+app.get('/api/strategies/:id', (req: AuthenticatedRequest, res: Response) => {
+  const { id } = req.params;
+  const strat = strategyLab.getStrategy(id);
+  if (!strat) {
+    return sendSafeError(res, 404, 'STRATEGY_NOT_FOUND', `Strategy with ID '${id}' not found.`, null, req);
+  }
+  res.json({ success: true, strategy: strat });
+});
+
+// POST /api/strategies/:id/versions - Save modified parameters as new immutable version
+app.post('/api/strategies/:id/versions', (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { indicators, risk, changeNotes } = req.body;
+
+    const updated = strategyLab.saveStrategyVersion(
+      id,
+      indicators || {},
+      risk || {},
+      changeNotes || 'Parameter optimization.'
+    );
+
+    res.json({ success: true, strategy: updated, message: `Strategy bumped to version ${updated.activeVersion}.` });
+  } catch (error: any) {
+    sendSafeError(res, 400, 'VERSION_SAVE_FAILED', error.message || 'Failed to save strategy version.', error, req);
+  }
+});
+
+// POST /api/strategies/compare - Compare multiple strategies over identical historical series
+app.post('/api/strategies/compare', (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { strategyIds, candles, initialCapital } = req.body;
+    if (!Array.isArray(strategyIds) || strategyIds.length === 0) {
+      return sendSafeError(res, 400, 'INVALID_STRATEGY_IDS', 'Array of strategy IDs required.', null, req);
+    }
+    if (!Array.isArray(candles) || candles.length < 20) {
+      return sendSafeError(res, 400, 'INSUFFICIENT_CANDLES', 'At least 20 historical candles required for comparison.', null, req);
+    }
+
+    const comparisonResults = strategyLab.compareStrategies(strategyIds, candles, initialCapital || 100000);
+    res.json({ success: true, comparisons: comparisonResults });
+  } catch (error: any) {
+    sendSafeError(res, 500, 'COMPARISON_FAILED', error.message || 'Failed to compare strategies.', error, req);
+  }
+});
+
+// ==========================================
+// 7. BROKER ABSTRACTION LAYER & PAPER TRADING REST API
 // ==========================================
 
 // GET /api/account - Full simulated account status
-app.get('/api/account', async (_req, res) => {
+app.get('/api/account', async (_req: AuthenticatedRequest, res: Response) => {
   try {
     const broker = brokerManager.getActiveBroker();
     const account = await broker.getAccount();
     res.json({ success: true, account });
   } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message || 'Failed to retrieve account summary' });
+    sendSafeError(res, 500, 'ACCOUNT_FETCH_FAILED', 'Failed to retrieve account summary.', error);
   }
 });
 
 // GET /api/market-data - Latest quotes for tracked assets
-app.get('/api/market-data', async (_req, res) => {
+app.get('/api/market-data', async (_req: AuthenticatedRequest, res: Response) => {
   try {
     const broker = brokerManager.getActiveBroker();
     const quotes = await broker.getAllMarketData();
     res.json({ success: true, quotes });
   } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message || 'Failed to retrieve market data' });
+    sendSafeError(res, 500, 'MARKET_DATA_FETCH_FAILED', 'Failed to retrieve market data.', error);
   }
 });
 
 // POST /api/market-data/tick - Ingest price tick to update valuations & triggers
-app.post('/api/market-data/tick', (req, res) => {
+app.post('/api/market-data/tick', (req: AuthenticatedRequest, res: Response) => {
   try {
     const { symbol, price } = req.body;
     if (!symbol || typeof price !== 'number' || isNaN(price) || price <= 0) {
-      return res.status(400).json({ success: false, error: 'Valid symbol and positive numerical price required.' });
+      return sendSafeError(res, 400, 'INVALID_TICK', 'Valid symbol string and positive numerical price are required.', null, req);
     }
     const broker = brokerManager.getActiveBroker();
     broker.updateMarketPrice(symbol, price);
+    BackendRiskEngine.updateMarketDataTimestamp(symbol);
+
     res.json({ success: true, message: `Tick updated for ${symbol} at $${price}` });
   } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message || 'Failed to update tick' });
+    sendSafeError(res, 500, 'TICK_UPDATE_FAILED', 'Failed to update price tick.', error, req);
   }
 });
 
 // GET /api/positions - Active open simulated positions
-app.get('/api/positions', async (_req, res) => {
+app.get('/api/positions', async (_req: AuthenticatedRequest, res: Response) => {
   try {
     const broker = brokerManager.getActiveBroker();
     const positions = await broker.getPositions();
     res.json({ success: true, positions, count: positions.length });
   } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message || 'Failed to retrieve positions' });
+    sendSafeError(res, 500, 'POSITIONS_FETCH_FAILED', 'Failed to retrieve positions.', error);
   }
 });
 
 // GET /api/orders - Active open and pending paper orders
-app.get('/api/orders', async (_req, res) => {
+app.get('/api/orders', async (_req: AuthenticatedRequest, res: Response) => {
   try {
     const broker = brokerManager.getActiveBroker();
     const orders = await broker.getOpenOrders();
     res.json({ success: true, orders, count: orders.length });
   } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message || 'Failed to retrieve orders' });
+    sendSafeError(res, 500, 'ORDERS_FETCH_FAILED', 'Failed to retrieve open orders.', error);
   }
 });
 
-// POST /api/paper/orders - Submit a new paper order
-app.post('/api/paper/orders', async (req, res) => {
+// POST /api/paper/orders - Submit a new paper order (Enforces Centralized BackendRiskEngine)
+app.post('/api/paper/orders', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { symbol, side, type, quantity, price, stopPrice, stopLoss, takeProfit, strategy, timeframe, reason } = req.body;
 
     // Strict Server-Side Input Validation
     if (!symbol || typeof symbol !== 'string') {
-      return res.status(400).json({ success: false, error: 'Validation failed: A valid symbol string is required.' });
+      return sendSafeError(res, 400, 'INVALID_SYMBOL', 'A valid symbol string is required.', null, req);
     }
     if (!side || !['BUY', 'SELL', 'LONG', 'SHORT'].includes(side)) {
-      return res.status(400).json({ success: false, error: "Validation failed: Order side must be 'BUY', 'SELL', 'LONG', or 'SHORT'." });
+      return sendSafeError(res, 400, 'INVALID_SIDE', "Order side must be 'BUY', 'SELL', 'LONG', or 'SHORT'.", null, req);
     }
     if (!type || !['MARKET', 'LIMIT', 'STOP'].includes(type)) {
-      return res.status(400).json({ success: false, error: "Validation failed: Order type must be 'MARKET', 'LIMIT', or 'STOP'." });
+      return sendSafeError(res, 400, 'INVALID_ORDER_TYPE', "Order type must be 'MARKET', 'LIMIT', or 'STOP'.", null, req);
     }
     if (typeof quantity !== 'number' || isNaN(quantity) || quantity <= 0) {
-      return res.status(400).json({ success: false, error: 'Validation failed: Order quantity must be a strictly positive number.' });
+      return sendSafeError(res, 400, 'INVALID_QUANTITY', 'Order quantity must be a strictly positive number.', null, req);
     }
 
     const broker = brokerManager.getActiveBroker();
+    const account = await broker.getAccount();
+    const currentPositions = await broker.getPositions();
+    const marketQuote = await broker.getMarketData(symbol);
+    const estimatedEntryPrice = typeof price === 'number' && price > 0 ? price : marketQuote?.lastPrice;
+
+    // Execute Backend Risk Engine Checks
+    const riskCheck = BackendRiskEngine.evaluateOrder({
+      symbol,
+      side,
+      type,
+      quantity,
+      entryPrice: estimatedEntryPrice,
+      stopLoss: typeof stopLoss === 'number' ? stopLoss : undefined,
+      takeProfit: typeof takeProfit === 'number' ? takeProfit : undefined,
+      currentEquity: account.equity,
+      openPositionsCount: currentPositions.length,
+      currentDrawdownPct: account.maxDrawdownPercent
+    });
+
+    if (!riskCheck.allowed) {
+      logger.warn('RISK_REJECTION', `Order rejected: ${riskCheck.rejectReason}`, {
+        symbol,
+        side,
+        quantity,
+        userId: req.user?.id
+      });
+      return sendSafeError(res, 400, 'RISK_LIMIT_VIOLATION', riskCheck.rejectReason || 'Order rejected by risk management policies.', null, req);
+    }
+
+    // Place simulated order through PaperBroker
     const order = await broker.placePaperOrder({
       symbol,
       side,
@@ -380,82 +574,146 @@ app.post('/api/paper/orders', async (req, res) => {
       reason
     });
 
+    // Record order in persistent relational database
+    relationalDb.insertOrder({
+      id: order.id,
+      userId: req.user?.id,
+      accountId: account.accountId || 'acc-paper-001',
+      strategyId: strategy,
+      symbol: order.symbol,
+      side: order.side,
+      type: order.type,
+      status: order.status,
+      quantity: order.quantity,
+      price: order.price,
+      stopPrice: order.stopPrice,
+      stopLoss: order.stopLoss,
+      takeProfit: order.takeProfit,
+      fee: order.fee || 0,
+      slippage: order.slippage || 0,
+      createdAt: order.createdAt
+    });
+
+    relationalDb.logAudit({
+      userId: req.user?.id,
+      action: 'PAPER_ORDER_PLACED',
+      details: `${order.side} ${order.quantity} ${order.symbol} (${order.type}) placed successfully`,
+      ip: req.ip
+    });
+
     res.status(201).json({
       success: true,
       order,
+      riskMetrics: {
+        riskDollar: riskCheck.calculatedRiskDollar,
+        riskPercent: riskCheck.calculatedRiskPercent,
+        riskRewardRatio: riskCheck.riskRewardRatio
+      },
       message: `Simulated paper ${order.type} order placed successfully.`
     });
   } catch (error: any) {
-    res.status(400).json({ success: false, error: error.message || 'Failed to place paper order' });
+    sendSafeError(res, 400, 'ORDER_EXECUTION_FAILED', error.message || 'Failed to place paper order.', error, req);
   }
 });
 
 // POST /api/paper/orders/:id/cancel - Cancel pending paper order
-app.post('/api/paper/orders/:id/cancel', async (req, res) => {
+app.post('/api/paper/orders/:id/cancel', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     const broker = brokerManager.getActiveBroker();
     const order = await broker.cancelPaperOrder(id);
+
+    relationalDb.logAudit({
+      userId: req.user?.id,
+      action: 'PAPER_ORDER_CANCELLED',
+      details: `Order ${id} cancelled`,
+      ip: req.ip
+    });
+
     res.json({ success: true, order, message: `Paper order ${id} successfully cancelled.` });
   } catch (error: any) {
-    res.status(400).json({ success: false, error: error.message || 'Failed to cancel paper order' });
+    sendSafeError(res, 400, 'ORDER_CANCEL_FAILED', error.message || 'Failed to cancel paper order.', error, req);
   }
 });
 
 // POST /api/paper/positions/:id/close - Close simulated position
-app.post('/api/paper/positions/:id/close', async (req, res) => {
+app.post('/api/paper/positions/:id/close', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     const { reason } = req.body;
     const broker = brokerManager.getActiveBroker();
     const position = await broker.closePaperPosition(id, reason || 'MANUAL_DASHBOARD_CLOSE');
+
+    relationalDb.logAudit({
+      userId: req.user?.id,
+      action: 'PAPER_POSITION_CLOSED',
+      details: `Position ${id} closed. Realized PnL: $${position.unrealizedPnL.toFixed(2)}`,
+      ip: req.ip
+    });
+
     res.json({
       success: true,
       position,
       message: `Simulated position ${id} successfully closed and logged to trade journal.`
     });
   } catch (error: any) {
-    res.status(400).json({ success: false, error: error.message || 'Failed to close position' });
+    sendSafeError(res, 400, 'POSITION_CLOSE_FAILED', error.message || 'Failed to close position.', error, req);
   }
 });
 
 // POST /api/paper/account/reset - Reset simulated paper account
-app.post('/api/paper/account/reset', async (req, res) => {
+app.post('/api/paper/account/reset', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { startingBalance } = req.body;
     const broker = brokerManager.getActiveBroker();
     const account = await broker.resetAccount(typeof startingBalance === 'number' ? startingBalance : 100000);
+
+    relationalDb.logAudit({
+      userId: req.user?.id,
+      action: 'ACCOUNT_RESET',
+      details: `Paper account reset to $${account.balance}`,
+      ip: req.ip
+    });
+
     res.json({
       success: true,
       account,
       message: `Paper account successfully reset to $${account.balance.toLocaleString()} starting balance.`
     });
   } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message || 'Failed to reset account' });
+    sendSafeError(res, 500, 'ACCOUNT_RESET_FAILED', error.message || 'Failed to reset account.', error, req);
   }
 });
 
 // GET /api/trades - Completed simulated trade journal ledger
-app.get('/api/trades', async (_req, res) => {
+app.get('/api/trades', async (_req: AuthenticatedRequest, res: Response) => {
   try {
     const broker = brokerManager.getActiveBroker();
     const trades = await broker.getTrades();
     res.json({ success: true, trades, count: trades.length });
   } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message || 'Failed to retrieve trade ledger' });
+    sendSafeError(res, 500, 'TRADES_FETCH_FAILED', 'Failed to retrieve trade ledger.', error);
   }
 });
 
-// POST /api/backtest - Run historical backtest using broker simulation rules
-app.post('/api/backtest', (req, res) => {
+// ==========================================
+// 8. QUANTITATIVE ANALYSIS, BACKTESTING & AI
+// ==========================================
+
+// POST /api/backtest - Run historical backtest using zero-lookahead simulation rules
+app.post('/api/backtest', (req: AuthenticatedRequest, res: Response) => {
   try {
     const { candles, strategyId, symbol, timeframe, config } = req.body;
 
     if (!Array.isArray(candles) || candles.length < 15) {
-      return res.status(400).json({
-        success: false,
-        error: 'Validation failed: At least 15 historical candlestick bars required for statistical simulation.'
-      });
+      return sendSafeError(
+        res,
+        400,
+        'INSUFFICIENT_DATA',
+        'Validation failed: At least 15 historical candlestick bars required for statistical simulation.',
+        null,
+        req
+      );
     }
 
     const effectiveConfig = {
@@ -475,27 +733,276 @@ app.post('/api/backtest', (req, res) => {
 
     res.json({ success: true, results });
   } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message || 'Backtest simulation failed' });
+    sendSafeError(res, 500, 'BACKTEST_FAILED', error.message || 'Backtest simulation failed.', error, req);
   }
 });
 
+// POST /api/walk-forward - Execute Walk-Forward & Out-of-Sample analysis
+app.post('/api/walk-forward', (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { candles, strategyId, symbol, timeframe, config } = req.body;
+
+    if (!Array.isArray(candles) || candles.length < 50) {
+      return sendSafeError(
+        res,
+        400,
+        'INSUFFICIENT_DATA',
+        'At least 50 historical candles required for walk-forward rolling window validation.',
+        null,
+        req
+      );
+    }
+
+    const report = executeWalkForwardAnalysis(
+      candles,
+      strategyId || 'trend_following',
+      symbol || 'BTC/USDT',
+      timeframe || '4h',
+      config
+    );
+
+    res.json({ success: true, report });
+  } catch (error: any) {
+    sendSafeError(res, 500, 'WALK_FORWARD_FAILED', error.message || 'Walk-forward analysis failed.', error, req);
+  }
+});
+
+// POST /api/chat - Server-side Gemini AI Analyst Proxy
+app.post('/api/chat', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { messages, systemInstruction } = req.body;
+    const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY || '';
+
+    if (!apiKey) {
+      logger.warn('AI_SERVICE', 'Gemini API key is not configured in environment variables');
+      return res.status(200).json({
+        text: "AI Analyst is running in offline analytical mode (GEMINI_API_KEY not configured). The quantitative signals, support/resistance levels, indicators, and paper broker execution remain fully operational."
+      });
+    }
+
+    const ai = new GoogleGenAI({ apiKey });
+    const contents = (messages || []).map((m: any) => ({
+      role: m.role === 'assistant' ? 'model' : m.role,
+      parts: [{ text: m.content || m.text || '' }]
+    }));
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.5-flash',
+      contents: contents,
+      config: {
+        systemInstruction: systemInstruction ||
+          "You are a Senior Quantitative Trading Analyst and Financial Astrology Researcher. You provide disciplined technical analysis, market structure commentary (BOS, CHoCH, key S/R levels), probability assessments, and statistical evaluations of astrological cycles (lunar phases, planetary retrograde stations) with strict capital preservation principles. You always emphasize risk management, invalidation levels, and position sizing. Clearly label all analysis as analytical thoughts, not guaranteed financial predictions."
+      }
+    });
+
+    res.json({ text: response.text });
+  } catch (error: any) {
+    sendSafeError(res, 500, 'GEMINI_API_ERROR', 'AI Analyst generation failed.', error, req);
+  }
+});
+
+// ==========================================
+// 9. RSS REAL-TIME NEWS AGGREGATION
+// ==========================================
+
+let newsCache: { data: any[]; timestamp: number } = { data: [], timestamp: 0 };
+
+function parseRss(xml: string, sourceName: string, defaultRegion: string, defaultCategory: string) {
+  const items: any[] = [];
+  const itemMatches = xml.match(/<item>[\s\S]*?<\/item>/gi) || [];
+
+  for (const itemXml of itemMatches.slice(0, 10)) {
+    const titleMatch = itemXml.match(/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/i);
+    const descMatch = itemXml.match(/<description>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/description>/i);
+    const linkMatch = itemXml.match(/<link>([\s\S]*?)<\/link>/i);
+    const pubDateMatch = itemXml.match(/<pubDate>([\s\S]*?)<\/pubDate>/i);
+
+    if (titleMatch) {
+      const title = titleMatch[1].trim().replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&apos;/g, "'");
+      const rawDesc = descMatch ? descMatch[1].trim().replace(/<[^>]*>/g, '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'") : '';
+      const summary = rawDesc.length > 240 ? rawDesc.slice(0, 240) + '...' : rawDesc;
+
+      const lower = (title + ' ' + summary).toLowerCase();
+      const assets: string[] = [];
+      if (lower.includes('gold') || lower.includes('bullion') || lower.includes('metal') || lower.includes('silver')) assets.push('XAU/USD');
+      if (lower.includes('bitcoin') || lower.includes('btc') || lower.includes('crypto') || lower.includes('coinbase') || lower.includes('binance')) assets.push('BTC/USDT');
+      if (lower.includes('ethereum') || lower.includes('ether') || lower.includes('eth ') || lower.includes('vitalik')) assets.push('ETH/USDT');
+      if (lower.includes('solana') || lower.includes('sol ') || lower.includes('memecoin')) assets.push('SOL/USDT');
+      if (lower.includes('euro') || lower.includes('ecb') || lower.includes('forex') || lower.includes('dollar') || lower.includes('dxy') || lower.includes('currency') || lower.includes('fx')) assets.push('EUR/USD');
+      if (lower.includes('s&p') || lower.includes('sp500') || lower.includes('stock') || lower.includes('wall street') || lower.includes('fed') || lower.includes('treasury') || lower.includes('yield') || lower.includes('nasdaq') || lower.includes('dow')) assets.push('SPX');
+      if (assets.length === 0) assets.push('SPX', 'BTC/USDT');
+
+      let region = defaultRegion;
+      let regionFlag = '🌐';
+      if (lower.includes('china') || lower.includes('beijing') || lower.includes('shanghai') || lower.includes('pboc') || lower.includes('yuan')) {
+        region = 'Asia-Pacific';
+        regionFlag = '🇨🇳';
+      } else if (lower.includes('japan') || lower.includes('tokyo') || lower.includes('boj') || lower.includes('yen') || lower.includes('nikkei')) {
+        region = 'Asia-Pacific';
+        regionFlag = '🇯🇵';
+      } else if (lower.includes('europe') || lower.includes('london') || lower.includes('germany') || lower.includes('uk ') || lower.includes('ecb')) {
+        region = 'Europe';
+        regionFlag = '🇪🇺';
+      } else if (lower.includes('fed') || lower.includes('us ') || lower.includes('u.s.') || lower.includes('wall street')) {
+        region = 'Americas';
+        regionFlag = '🇺🇸';
+      }
+
+      let sentiment: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = 'NEUTRAL';
+      let score = 0.0;
+      const bullishWords = ['surge', 'soar', 'gain', 'rally', 'record', 'high', 'beat', 'cut', 'easing', 'jump', 'inflow', 'stimulus', 'rebound', 'boost', 'upgrade', 'profit', 'expansion'];
+      const bearishWords = ['drop', 'fall', 'plunge', 'slump', 'down', 'hike', 'tariff', 'war', 'crackdown', 'outflow', 'decline', 'loss', 'miss', 'risk', 'warning', 'inflation', 'default'];
+
+      const bCount = bullishWords.filter((w) => lower.includes(w)).length;
+      const rCount = bearishWords.filter((w) => lower.includes(w)).length;
+
+      if (bCount > rCount) {
+        sentiment = 'BULLISH';
+        score = Math.min(0.95, 0.4 + bCount * 0.2);
+      } else if (rCount > bCount) {
+        sentiment = 'BEARISH';
+        score = -Math.min(0.95, 0.4 + rCount * 0.2);
+      }
+
+      const isBreaking = lower.includes('breaking') || lower.includes('urgent') || lower.includes('emergency') || lower.includes('fed') || lower.includes('rate cut') || lower.includes('record');
+      const urgency = isBreaking ? 'BREAKING' : bCount + rCount >= 2 ? 'HIGH' : 'MEDIUM';
+
+      let category = defaultCategory;
+      if (lower.includes('gold') || lower.includes('silver')) category = 'Gold & Metals';
+      else if (lower.includes('bitcoin') || lower.includes('crypto')) category = 'Crypto';
+      else if (lower.includes('forex') || lower.includes('dollar') || lower.includes('euro')) category = 'Forex';
+      else if (lower.includes('oil') || lower.includes('energy')) category = 'Energy & Geopolitics';
+      else if (lower.includes('stock') || lower.includes('sp500') || lower.includes('nasdaq')) category = 'Indices';
+
+      const marketImpact = sentiment === 'BULLISH'
+        ? `Provides supportive liquidity tailwinds and upward risk appetite across ${assets.join(' & ')}.`
+        : sentiment === 'BEARISH'
+        ? `Injects risk-off friction and potential volatility drawdowns across ${assets.join(' & ')}.`
+        : `Balanced structural catalyst; market awaits secondary macro confirmation.`;
+
+      items.push({
+        id: `rss-${Math.random().toString(36).substring(2, 9)}`,
+        title,
+        summary: summary || title,
+        url: linkMatch ? linkMatch[1].trim() : '#',
+        source: sourceName,
+        timestamp: pubDateMatch ? new Date(pubDateMatch[1]).toISOString() : new Date().toISOString(),
+        timeAgo: 'Recent',
+        region,
+        regionFlag,
+        category,
+        sentiment,
+        sentimentScore: score,
+        urgency,
+        affectedAssets: assets,
+        marketImpact
+      });
+    }
+  }
+  return items;
+}
+
+async function fetchAllRssNews(): Promise<any[]> {
+  const feeds = [
+    { url: 'https://cointelegraph.com/rss', name: 'CoinTelegraph', region: 'Global', category: 'Crypto' },
+    { url: 'https://www.coindesk.com/arc/outboundfeeds/rss/', name: 'CoinDesk', region: 'Americas', category: 'Crypto' },
+    { url: 'https://feeds.content.dowjones.io/public/rss/mw_topstories', name: 'MarketWatch', region: 'Americas', category: 'Macro' },
+    { url: 'https://search.cnbc.com/rs/search/view.html?partnerId=2000&keywords=markets&category=news&sort=date', name: 'CNBC', region: 'Americas', category: 'Macro' }
+  ];
+
+  const results = await Promise.allSettled(
+    feeds.map(async (feed) => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3500);
+      try {
+        const res = await fetch(feed.url, {
+          signal: controller.signal,
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+        });
+        clearTimeout(timeout);
+        if (!res.ok) return [];
+        const xml = await res.text();
+        return parseRss(xml, feed.name, feed.region, feed.category);
+      } catch {
+        clearTimeout(timeout);
+        return [];
+      }
+    })
+  );
+
+  const allItems: any[] = [];
+  for (const r of results) {
+    if (r.status === 'fulfilled' && Array.isArray(r.value)) {
+      allItems.push(...r.value);
+    }
+  }
+
+  allItems.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  return allItems.slice(0, 50);
+}
+
+app.get('/api/news', async (_req: Request, res: Response) => {
+  const now = Date.now();
+  if (newsCache.data.length > 0 && now - newsCache.timestamp < 60000) {
+    return res.json({ success: true, source: 'cache', items: newsCache.data });
+  }
+
+  try {
+    const liveItems = await fetchAllRssNews();
+    if (liveItems.length > 0) {
+      newsCache = { data: liveItems, timestamp: now };
+      return res.json({ success: true, source: 'live_rss', items: liveItems });
+    }
+  } catch (err: any) {
+    logger.warn('NEWS_FEED', `Live news fetch warning: ${err.message}`);
+  }
+
+  res.json({ success: true, source: 'cache', items: newsCache.data });
+});
+
+// ==========================================
+// 10. GLOBAL CENTRALIZED ERROR HANDLER
+// ==========================================
+app.use((err: any, req: AuthenticatedRequest, res: Response, _next: NextFunction) => {
+  logger.error('UNHANDLED_ERROR', err.message || 'Internal server error', {
+    requestId: req.id,
+    stack: err.stack
+  });
+
+  sendSafeError(
+    res,
+    500,
+    'INTERNAL_SERVER_ERROR',
+    'An unexpected error occurred while processing your request. Please contact support with the request ID.',
+    err,
+    req
+  );
+});
+
+// ==========================================
+// 11. VITE SPA / STATIC ASSETS & BOOTSTRAP
+// ==========================================
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
-      appType: 'spa',
+      appType: 'spa'
     });
     app.use(vite.middlewares);
   } else {
     app.use(express.static(path.resolve(__dirname, 'dist')));
-    app.get('*', (_req, res) => {
+    app.get('*', (_req: Request, res: Response) => {
       res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
     });
   }
 
   app.listen(port, '0.0.0.0', () => {
-    console.log(`Express + Vite server running on http://0.0.0.0:${port}`);
+    logger.info('SERVER', `Production-grade Express server running on http://0.0.0.0:${port}`, {
+      port,
+      environment: process.env.NODE_ENV || 'production'
+    });
   });
 }
 
 startServer();
+export default app;

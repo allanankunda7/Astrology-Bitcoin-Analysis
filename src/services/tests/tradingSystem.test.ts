@@ -31,6 +31,8 @@ import {
 import { calculatePositionRisk } from '../riskCalculator';
 import { runPaperBrokerTests } from './paperBroker.test';
 import { runStrategyLabAndReplayTests } from './strategyLabAndReplay.test';
+import { runFinancialCalculationTests } from './financialCalculations.test';
+import { runAuthAndSecurityTests } from './authAndSecurity.test';
 
 export async function runAllTests(): Promise<{ passed: number; failed: number; results: string[] }> {
   const results: string[] = [];
@@ -149,6 +151,18 @@ export async function runAllTests(): Promise<{ passed: number; failed: number; r
   passed += advancedSuite.passed;
   failed += advancedSuite.failed;
   results.push(...advancedSuite.results);
+
+  // Deterministic Financial Calculations Suite
+  const mathSuite = runFinancialCalculationTests();
+  passed += mathSuite.passed;
+  failed += mathSuite.failed;
+  results.push(...mathSuite.results);
+
+  // Authentication, Security & Risk Suite
+  const secSuite = runAuthAndSecurityTests();
+  passed += secSuite.passed;
+  failed += secSuite.failed;
+  results.push(...secSuite.results);
 
   return { passed, failed, results };
 }
