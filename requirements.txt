@@ -1,0 +1,17 @@
+# Core Data & Numerical Processing
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Market Data Retrieval
+yfinance>=0.2.36
+
+# Astronomy & Moon Phases (Used in Step 2)
+ephem>=4.1.5
+astral>=3.2
+
+# Statistical Analysis & Hypothesis Testing (Used in Step 5 & 6)
+scipy>=1.11.0
+
+# Visualization & Plotting (Used in Step 9)
+matplotlib>=3.7.0
+seaborn>=0.13.0

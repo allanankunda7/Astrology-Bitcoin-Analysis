@@ -1,0 +1,6 @@
+{
+  "name": "Astrology + Bitcoin Quantitative Backtesting System",
+  "description": "Educational quantitative research and backtesting platform testing astrological hypotheses on Bitcoin price data with rigorous statistical controls.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
