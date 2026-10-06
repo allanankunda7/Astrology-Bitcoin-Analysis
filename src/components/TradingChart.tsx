@@ -33,6 +33,7 @@ interface TradingChartProps {
     showBOS: boolean;
     showAstroEvents?: boolean;
   };
+  symbol?: string;
   supportLevel?: number;
   resistanceLevel?: number;
   entryZone?: { min: number; max: number };
@@ -45,6 +46,7 @@ interface TradingChartProps {
 export const TradingChart: React.FC<TradingChartProps> = ({
   candles,
   indicators,
+  symbol,
   supportLevel,
   resistanceLevel,
   stopLoss,
@@ -61,12 +63,18 @@ export const TradingChart: React.FC<TradingChartProps> = ({
   const ema200SeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const lastCandlesRef = useRef<CandleData[]>([]);
 
-  // Helper for Exponential Moving Average
-  function calcEMA(data: CandleData[], period: number) {
+  // Asset precision detection (Forex pairs like EUR/USD require 4-5 decimals and 0.0001 minMove)
+  const isForex = symbol === 'EUR/USD' || (candles.length > 0 && candles[0].close < 10);
+  const precision = isForex ? 4 : 2;
+  const minMove = isForex ? 0.0001 : 0.01;
+
+  // Helper for Exponential Moving Average with dynamic precision
+  function calcEMA(data: CandleData[], period: number, prec: number = precision) {
     if (data.length === 0) return [];
     const k = 2 / (period + 1);
     const res: { time: UTCTimestamp; value: number }[] = [];
     let ema = data[0].close;
+    const factor = Math.pow(10, prec);
 
     for (let i = 0; i < data.length; i++) {
       if (i === 0) {
@@ -75,17 +83,18 @@ export const TradingChart: React.FC<TradingChartProps> = ({
         ema = data[i].close * k + ema * (1 - k);
       }
       if (i >= period - 1) {
-        res.push({ time: data[i].time, value: Math.round(ema * 100) / 100 });
+        res.push({ time: data[i].time, value: Math.round(ema * factor) / factor });
       }
     }
     return res;
   }
 
-  // Helper for Bollinger Bands (period 20, mult 2)
-  function calcBB(data: CandleData[], period = 20, mult = 2) {
+  // Helper for Bollinger Bands (period 20, mult 2) with dynamic precision
+  function calcBB(data: CandleData[], period = 20, mult = 2, prec: number = precision) {
     const upper: { time: UTCTimestamp; value: number }[] = [];
     const lower: { time: UTCTimestamp; value: number }[] = [];
     const middle: { time: UTCTimestamp; value: number }[] = [];
+    const factor = Math.pow(10, prec);
 
     for (let i = period - 1; i < data.length; i++) {
       const slice = data.slice(i - period + 1, i + 1);
@@ -94,9 +103,9 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       const variance = slice.reduce((a, b) => a + Math.pow(b.close - mean, 2), 0) / period;
       const std = Math.sqrt(variance);
 
-      middle.push({ time: data[i].time, value: mean });
-      upper.push({ time: data[i].time, value: mean + mult * std });
-      lower.push({ time: data[i].time, value: mean - mult * std });
+      middle.push({ time: data[i].time, value: Math.round(mean * factor) / factor });
+      upper.push({ time: data[i].time, value: Math.round((mean + mult * std) * factor) / factor });
+      lower.push({ time: data[i].time, value: Math.round((mean - mult * std) * factor) / factor });
     }
     return { upper, lower, middle };
   }
@@ -132,6 +141,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       },
       rightPriceScale: {
         borderColor: '#1E293B',
+        autoScale: true,
         scaleMargins: {
           top: 0.1,
           bottom: 0.22,
@@ -146,34 +156,22 @@ export const TradingChart: React.FC<TradingChartProps> = ({
 
     chartRef.current = chart;
 
-    if (candles.length === 0) return;
-
-    // Sort and deduplicate candles
-    const sortedCandles = [...candles]
-      .sort((a, b) => (a.time as number) - (b.time as number))
-      .filter((c, idx, arr) => idx === 0 || c.time > arr[idx - 1].time);
-
-    // 1. Add Candlestick Series
+    // 1. Always create Candlestick Series configured with asset-specific price format
     const candleSeries = chart.addSeries(CandlestickSeries, {
       upColor: '#10B981',
       downColor: '#F43F5E',
       borderVisible: false,
       wickUpColor: '#10B981',
       wickDownColor: '#F43F5E',
+      priceFormat: {
+        type: 'price',
+        precision: precision,
+        minMove: minMove,
+      },
     });
     candleSeriesRef.current = candleSeries;
 
-    candleSeries.setData(
-      sortedCandles.map((c) => ({
-        time: c.time,
-        open: c.open,
-        high: c.high,
-        low: c.low,
-        close: c.close,
-      }))
-    );
-
-    // 2. Add Volume Series at bottom
+    // 2. Always create Volume Series at bottom
     const volumeSeries = chart.addSeries(HistogramSeries, {
       color: '#3B82F6',
       priceFormat: {
@@ -190,13 +188,40 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       },
     });
 
-    volumeSeries.setData(
-      sortedCandles.map((c) => ({
-        time: c.time,
-        value: c.volume,
-        color: c.close >= c.open ? 'rgba(16, 185, 129, 0.35)' : 'rgba(244, 63, 94, 0.35)',
-      }))
-    );
+    // Sort and deduplicate candles if available
+    const sortedCandles = candles.length > 0
+      ? [...candles]
+          .sort((a, b) => (a.time as number) - (b.time as number))
+          .filter((c, idx, arr) => idx === 0 || c.time > arr[idx - 1].time)
+      : [];
+
+    if (sortedCandles.length > 0) {
+      candleSeries.setData(
+        sortedCandles.map((c) => ({
+          time: c.time,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+        }))
+      );
+
+      volumeSeries.setData(
+        sortedCandles.map((c) => ({
+          time: c.time,
+          value: c.volume,
+          color: c.close >= c.open ? 'rgba(16, 185, 129, 0.35)' : 'rgba(244, 63, 94, 0.35)',
+        }))
+      );
+
+      lastCandlesRef.current = sortedCandles;
+    }
+
+    const linePriceFormat = {
+      type: 'price' as const,
+      precision: precision,
+      minMove: minMove,
+    };
 
     // 3. Technical Indicators
     // EMA 21
@@ -205,8 +230,9 @@ export const TradingChart: React.FC<TradingChartProps> = ({
         color: '#06B6D4',
         lineWidth: 1,
         title: 'EMA 21',
+        priceFormat: linePriceFormat,
       });
-      ema21.setData(calcEMA(sortedCandles, 21));
+      ema21.setData(calcEMA(sortedCandles, 21, precision));
       ema21SeriesRef.current = ema21;
     }
 
@@ -216,8 +242,9 @@ export const TradingChart: React.FC<TradingChartProps> = ({
         color: '#F59E0B',
         lineWidth: 1,
         title: 'EMA 50',
+        priceFormat: linePriceFormat,
       });
-      ema50.setData(calcEMA(sortedCandles, 50));
+      ema50.setData(calcEMA(sortedCandles, 50, precision));
       ema50SeriesRef.current = ema50;
     }
 
@@ -227,30 +254,34 @@ export const TradingChart: React.FC<TradingChartProps> = ({
         color: '#A855F7',
         lineWidth: 2,
         title: 'EMA 200',
+        priceFormat: linePriceFormat,
       });
-      ema200.setData(calcEMA(sortedCandles, 200));
+      ema200.setData(calcEMA(sortedCandles, 200, precision));
       ema200SeriesRef.current = ema200;
     }
 
     // Bollinger Bands
     if (indicators.showBollinger) {
-      const { upper, lower, middle } = calcBB(sortedCandles, 20, 2);
+      const { upper, lower, middle } = calcBB(sortedCandles, 20, 2, precision);
       const upperSeries = chart.addSeries(LineSeries, {
         color: 'rgba(148, 163, 184, 0.65)',
         lineWidth: 1,
         lineStyle: LineStyle.Dotted,
         title: 'BB Upper',
+        priceFormat: linePriceFormat,
       });
       const lowerSeries = chart.addSeries(LineSeries, {
         color: 'rgba(148, 163, 184, 0.65)',
         lineWidth: 1,
         lineStyle: LineStyle.Dotted,
         title: 'BB Lower',
+        priceFormat: linePriceFormat,
       });
       const midSeries = chart.addSeries(LineSeries, {
         color: 'rgba(148, 163, 184, 0.35)',
         lineWidth: 1,
         title: 'BB Basis',
+        priceFormat: linePriceFormat,
       });
 
       upperSeries.setData(upper);
@@ -258,10 +289,18 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       midSeries.setData(middle);
     }
 
+    // Current price reference to guard price lines from distorting the chart scale
+    const lastPrice = sortedCandles.length > 0 ? sortedCandles[sortedCandles.length - 1].close : 0;
+    const isValidPrice = (p?: number) => {
+      if (!p || typeof p !== 'number' || p <= 0) return false;
+      if (lastPrice > 0 && Math.abs(p - lastPrice) / lastPrice > 0.35) return false;
+      return true;
+    };
+
     // 4. Support & Resistance price lines
-    if (indicators.showSRLevels && supportLevel && resistanceLevel) {
+    if (indicators.showSRLevels && isValidPrice(supportLevel) && isValidPrice(resistanceLevel)) {
       candleSeries.createPriceLine({
-        price: resistanceLevel,
+        price: resistanceLevel!,
         color: '#F43F5E',
         lineWidth: 1,
         lineStyle: LineStyle.Dotted,
@@ -270,7 +309,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       });
 
       candleSeries.createPriceLine({
-        price: supportLevel,
+        price: supportLevel!,
         color: '#10B981',
         lineWidth: 1,
         lineStyle: LineStyle.Dotted,
@@ -280,9 +319,9 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     }
 
     // 5. Setup Lines: Stop Loss & Profit Targets
-    if (stopLoss) {
+    if (isValidPrice(stopLoss)) {
       candleSeries.createPriceLine({
-        price: stopLoss,
+        price: stopLoss!,
         color: '#E11D48',
         lineWidth: 2,
         lineStyle: LineStyle.Solid,
@@ -291,9 +330,9 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       });
     }
 
-    if (target1) {
+    if (isValidPrice(target1)) {
       candleSeries.createPriceLine({
-        price: target1,
+        price: target1!,
         color: '#34D399',
         lineWidth: 1,
         lineStyle: LineStyle.Dashed,
@@ -302,9 +341,9 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       });
     }
 
-    if (target2) {
+    if (isValidPrice(target2)) {
       candleSeries.createPriceLine({
-        price: target2,
+        price: target2!,
         color: '#10B981',
         lineWidth: 2,
         lineStyle: LineStyle.Solid,
@@ -343,6 +382,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       }
     };
   }, [
+    symbol,
     indicators.showEma21,
     indicators.showEma50,
     indicators.showEma200,
@@ -365,32 +405,8 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     const prev = lastCandlesRef.current;
     const curr = candles;
 
-    // Check if this is a live tick update (same count or +1)
-    const isTickUpdate =
-      prev.length > 0 &&
-      (curr.length === prev.length || curr.length === prev.length + 1) &&
-      Math.abs((curr[0]?.time as number) - (prev[0]?.time as number)) < 3600;
-
-    if (isTickUpdate) {
-      const lastCandle = curr[curr.length - 1];
-      // Ultra-fast lightweight-charts series update
-      candleSeriesRef.current.update({
-        time: lastCandle.time,
-        open: lastCandle.open,
-        high: lastCandle.high,
-        low: lastCandle.low,
-        close: lastCandle.close,
-      });
-
-      volumeSeriesRef.current.update({
-        time: lastCandle.time,
-        value: lastCandle.volume,
-        color: lastCandle.close >= lastCandle.open ? 'rgba(16, 185, 129, 0.4)' : 'rgba(244, 63, 94, 0.4)',
-      });
-
-      lastCandlesRef.current = curr;
-    } else {
-      // Full data replacement (symbol or timeframe changed)
+    // If series was not populated initially, perform full initial population
+    if (prev.length === 0) {
       const sortedCandles = [...curr]
         .sort((a, b) => (a.time as number) - (b.time as number))
         .filter((c, idx, arr) => idx === 0 || c.time > arr[idx - 1].time);
@@ -422,6 +438,82 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       }
 
       lastCandlesRef.current = sortedCandles;
+      return;
+    }
+
+    const lastPrev = prev[prev.length - 1];
+    const lastCurr = curr[curr.length - 1];
+
+    // Check if this is a live tick update (updating active bar or appending next bar)
+    const isTickUpdate =
+      lastPrev &&
+      lastCurr &&
+      (curr.length === prev.length || curr.length === prev.length + 1) &&
+      (lastCurr.time as number) >= (lastPrev.time as number);
+
+    if (isTickUpdate) {
+      try {
+        candleSeriesRef.current.update({
+          time: lastCurr.time,
+          open: lastCurr.open,
+          high: lastCurr.high,
+          low: lastCurr.low,
+          close: lastCurr.close,
+        });
+
+        volumeSeriesRef.current.update({
+          time: lastCurr.time,
+          value: lastCurr.volume,
+          color: lastCurr.close >= lastCurr.open ? 'rgba(16, 185, 129, 0.4)' : 'rgba(244, 63, 94, 0.4)',
+        });
+
+        lastCandlesRef.current = curr;
+      } catch {
+        // Fallback to setData if incremental update failed
+        candleSeriesRef.current.setData(
+          curr.map((c) => ({
+            time: c.time,
+            open: c.open,
+            high: c.high,
+            low: c.low,
+            close: c.close,
+          }))
+        );
+        lastCandlesRef.current = curr;
+      }
+    } else {
+      // Full data replacement (symbol or timeframe changed)
+      const sortedCandles = [...curr]
+        .sort((a, b) => (a.time as number) - (b.time as number))
+        .filter((c, idx, arr) => idx === 0 || c.time > arr[idx - 1].time);
+
+      candleSeriesRef.current.setData(
+        sortedCandles.map((c) => ({
+          time: c.time,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+        }))
+      );
+
+      volumeSeriesRef.current.setData(
+        sortedCandles.map((c) => ({
+          time: c.time,
+          value: c.volume,
+          color: c.close >= c.open ? 'rgba(16, 185, 129, 0.35)' : 'rgba(244, 63, 94, 0.35)',
+        }))
+      );
+
+      if (ema21SeriesRef.current) ema21SeriesRef.current.setData(calcEMA(sortedCandles, 21, precision));
+      if (ema50SeriesRef.current) ema50SeriesRef.current.setData(calcEMA(sortedCandles, 50, precision));
+      if (ema200SeriesRef.current) ema200SeriesRef.current.setData(calcEMA(sortedCandles, 200, precision));
+
+      if (chartRef.current) {
+        chartRef.current.timeScale().fitContent();
+      }
+
+      lastCandlesRef.current = sortedCandles;
     }
   }, [candles]);
 
@@ -436,14 +528,14 @@ export const TradingChart: React.FC<TradingChartProps> = ({
         <div className="absolute top-2 left-3 z-10 flex items-center gap-2 px-2 py-0.5 bg-[#0B0E17]/85 backdrop-blur-sm border border-slate-800 rounded text-[11px] font-mono text-slate-300 pointer-events-none">
           <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
           <span className="text-slate-400">O:</span>
-          <span>{latestCandle.open}</span>
+          <span>{isForex ? latestCandle.open.toFixed(4) : latestCandle.open.toFixed(2)}</span>
           <span className="text-slate-400">H:</span>
-          <span className="text-emerald-400">{latestCandle.high}</span>
+          <span className="text-emerald-400">{isForex ? latestCandle.high.toFixed(4) : latestCandle.high.toFixed(2)}</span>
           <span className="text-slate-400">L:</span>
-          <span className="text-rose-400">{latestCandle.low}</span>
+          <span className="text-rose-400">{isForex ? latestCandle.low.toFixed(4) : latestCandle.low.toFixed(2)}</span>
           <span className="text-slate-400">C:</span>
           <span className={latestCandle.close >= latestCandle.open ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
-            {latestCandle.close}
+            {isForex ? latestCandle.close.toFixed(4) : latestCandle.close.toFixed(2)}
           </span>
         </div>
       )}

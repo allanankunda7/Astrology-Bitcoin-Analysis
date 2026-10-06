@@ -240,9 +240,11 @@ export const SetupScoringViewer: React.FC = () => {
     setLiquiditySweepConfirmed(p.liquiditySweepConfirmed);
 
     setCalcEntry(p.currentPrice);
+    const isForex = p.symbol === 'EUR/USD' || p.currentPrice < 10;
+    const fact = isForex ? 10000 : 100;
     const sl = p.direction === 'LONG'
-      ? Math.round((p.recentSwingLow - 0.5 * p.atr) * 100) / 100
-      : Math.round((p.recentSwingHigh + 0.5 * p.atr) * 100) / 100;
+      ? Math.round((p.recentSwingLow - 0.5 * p.atr) * fact) / fact
+      : Math.round((p.recentSwingHigh + 0.5 * p.atr) * fact) / fact;
     setCalcStopLoss(sl);
   };
 
@@ -379,14 +381,18 @@ export const SetupScoringViewer: React.FC = () => {
 
   // 2. Compute Trade Plan & Multi-Target Ladder
   const tradePlan = useMemo(() => {
+    const isForex = symbol === 'EUR/USD' || currentPrice < 10;
+    const prec = isForex ? 4 : 2;
+    const fact = Math.pow(10, prec);
+    const roundP = (v: number) => Math.round(v * fact) / fact;
     const isLong = direction === 'LONG';
     const entryOptimal = currentPrice;
-    const entryZoneLower = Math.round((currentPrice * (isLong ? 0.995 : 0.997)) * 100) / 100;
-    const entryZoneUpper = Math.round((currentPrice * (isLong ? 1.003 : 1.005)) * 100) / 100;
+    const entryZoneLower = roundP(currentPrice * (isForex ? 0.999 : (isLong ? 0.995 : 0.997)));
+    const entryZoneUpper = roundP(currentPrice * (isForex ? 1.001 : (isLong ? 1.003 : 1.005)));
 
     const invalidationSL = isLong
-      ? Math.round((recentSwingLow - 0.5 * atr) * 100) / 100
-      : Math.round((recentSwingHigh + 0.5 * atr) * 100) / 100;
+      ? roundP(recentSwingLow - 0.5 * atr)
+      : roundP(recentSwingHigh + 0.5 * atr);
 
     const riskDistance = Math.abs(entryOptimal - invalidationSL);
     const stopDistPct = Math.round((riskDistance / entryOptimal) * 10000) / 100;
@@ -397,7 +403,7 @@ export const SetupScoringViewer: React.FC = () => {
         {
           targetId: 1,
           name: 'TP1 (Partial 1.5R)',
-          price: Math.round((entryOptimal + 1.5 * riskDistance) * 100) / 100,
+          price: roundP(entryOptimal + 1.5 * riskDistance),
           rrRatio: 1.5,
           scaleOutPct: 40.0,
           rationale: 'First resistance cluster; locks in 1.5R gains and triggers trailing SL to Breakeven.'
@@ -405,7 +411,7 @@ export const SetupScoringViewer: React.FC = () => {
         {
           targetId: 2,
           name: 'TP2 (Macro Liquidity 2.8R)',
-          price: Math.round((entryOptimal + 2.8 * riskDistance) * 100) / 100,
+          price: roundP(entryOptimal + 2.8 * riskDistance),
           rrRatio: 2.8,
           scaleOutPct: 40.0,
           rationale: 'Major structural swing high liquidity pool; core institutional profit harvest.'
@@ -413,7 +419,7 @@ export const SetupScoringViewer: React.FC = () => {
         {
           targetId: 3,
           name: 'TP3 (Trend Runner 4.5R)',
-          price: Math.round((entryOptimal + 4.5 * riskDistance) * 100) / 100,
+          price: roundP(entryOptimal + 4.5 * riskDistance),
           rrRatio: 4.5,
           scaleOutPct: 20.0,
           rationale: 'Fibonacci 1.618 expansion runner targeting unmitigated macro liquidity.'
@@ -424,7 +430,7 @@ export const SetupScoringViewer: React.FC = () => {
         {
           targetId: 1,
           name: 'TP1 (Partial 1.5R)',
-          price: Math.round((entryOptimal - 1.5 * riskDistance) * 100) / 100,
+          price: roundP(entryOptimal - 1.5 * riskDistance),
           rrRatio: 1.5,
           scaleOutPct: 40.0,
           rationale: 'First intermediate support cluster; secures 1.5R and moves SL to Breakeven.'
@@ -432,7 +438,7 @@ export const SetupScoringViewer: React.FC = () => {
         {
           targetId: 2,
           name: 'TP2 (Swing Low Liquidity 2.8R)',
-          price: Math.round((entryOptimal - 2.8 * riskDistance) * 100) / 100,
+          price: roundP(entryOptimal - 2.8 * riskDistance),
           rrRatio: 2.8,
           scaleOutPct: 40.0,
           rationale: 'Structural swing low resting sell-stop liquidity sweep extraction.'
@@ -440,7 +446,7 @@ export const SetupScoringViewer: React.FC = () => {
         {
           targetId: 3,
           name: 'TP3 (Macro Demand Zone 4.5R)',
-          price: Math.round((entryOptimal - 4.5 * riskDistance) * 100) / 100,
+          price: roundP(entryOptimal - 4.5 * riskDistance),
           rrRatio: 4.5,
           scaleOutPct: 20.0,
           rationale: 'Deep capitulation target at higher-timeframe demand block.'
@@ -450,8 +456,8 @@ export const SetupScoringViewer: React.FC = () => {
 
     const blendedRR = Math.round(((1.5 * 0.40) + (2.8 * 0.40) + (4.5 * 0.20)) * 100) / 100;
     const invalidationRationale = isLong
-      ? `Close below Higher Low ($${recentSwingLow.toLocaleString()}) minus 0.5×ATR ($${(0.5 * atr).toFixed(1)}) structurally invalidates the bullish sequence.`
-      : `Close above Lower High ($${recentSwingHigh.toLocaleString()}) plus 0.5×ATR ($${(0.5 * atr).toFixed(1)}) structurally invalidates the bearish sequence.`;
+      ? `Close below Higher Low ($${isForex ? recentSwingLow.toFixed(4) : recentSwingLow.toLocaleString()}) minus 0.5×ATR ($${(0.5 * atr).toFixed(isForex ? 4 : 1)}) structurally invalidates the bullish sequence.`
+      : `Close above Lower High ($${isForex ? recentSwingHigh.toFixed(4) : recentSwingHigh.toLocaleString()}) plus 0.5×ATR ($${(0.5 * atr).toFixed(isForex ? 4 : 1)}) structurally invalidates the bearish sequence.`;
 
     return {
       entryZoneLower,
@@ -1155,7 +1161,7 @@ export const SetupScoringViewer: React.FC = () => {
                 </div>
                 <div className="text-right">
                   <div className="text-base font-bold text-emerald-400">
-                    ${tradePlan.targets[2]?.price.toLocaleString()}
+                    ${symbol === 'EUR/USD' || currentPrice < 10 ? tradePlan.targets[2]?.price.toFixed(4) : tradePlan.targets[2]?.price.toLocaleString()}
                   </div>
                   <div className="text-[11px] text-slate-500">
                     +{Math.abs(Math.round(((tradePlan.targets[2]?.price - currentPrice) / currentPrice) * 10000) / 100).toFixed(2)}% from entry
@@ -1179,7 +1185,7 @@ export const SetupScoringViewer: React.FC = () => {
                 </div>
                 <div className="text-right">
                   <div className="text-base font-bold text-emerald-400">
-                    ${tradePlan.targets[1]?.price.toLocaleString()}
+                    ${symbol === 'EUR/USD' || currentPrice < 10 ? tradePlan.targets[1]?.price.toFixed(4) : tradePlan.targets[1]?.price.toLocaleString()}
                   </div>
                   <div className="text-[11px] text-slate-500">
                     +{Math.abs(Math.round(((tradePlan.targets[1]?.price - currentPrice) / currentPrice) * 10000) / 100).toFixed(2)}% from entry
@@ -1203,7 +1209,7 @@ export const SetupScoringViewer: React.FC = () => {
                 </div>
                 <div className="text-right">
                   <div className="text-base font-bold text-cyan-300">
-                    ${tradePlan.targets[0]?.price.toLocaleString()}
+                    ${symbol === 'EUR/USD' || currentPrice < 10 ? tradePlan.targets[0]?.price.toFixed(4) : tradePlan.targets[0]?.price.toLocaleString()}
                   </div>
                   <div className="text-[11px] text-slate-500">
                     +{Math.abs(Math.round(((tradePlan.targets[0]?.price - currentPrice) / currentPrice) * 10000) / 100).toFixed(2)}% from entry
@@ -1220,17 +1226,17 @@ export const SetupScoringViewer: React.FC = () => {
                         OPTIMAL ENTRY ZONE
                       </span>
                       <span className="text-xs text-slate-300 font-bold">
-                        Limit: ${tradePlan.entryZoneLower.toLocaleString()} – ${tradePlan.entryZoneUpper.toLocaleString()}
+                        Limit: ${symbol === 'EUR/USD' || currentPrice < 10 ? `${tradePlan.entryZoneLower.toFixed(4)} – ${tradePlan.entryZoneUpper.toFixed(4)}` : `${tradePlan.entryZoneLower.toLocaleString()} – ${tradePlan.entryZoneUpper.toLocaleString()}`}
                       </span>
                     </div>
                     <div className="text-xs text-slate-400 mt-1">
-                      Optimal Limit execution benchmark: <span className="text-white font-bold">${tradePlan.entryOptimal.toLocaleString()}</span>
+                      Optimal Limit execution benchmark: <span className="text-white font-bold">${symbol === 'EUR/USD' || currentPrice < 10 ? tradePlan.entryOptimal.toFixed(4) : tradePlan.entryOptimal.toLocaleString()}</span>
                     </div>
                   </div>
                   <div className="text-right">
                     <div className="text-xs text-amber-300 font-bold">ACTIVE QUOTE</div>
                     <div className="text-sm font-extrabold text-white">
-                      ${currentPrice.toLocaleString()}
+                      ${symbol === 'EUR/USD' || currentPrice < 10 ? currentPrice.toFixed(4) : currentPrice.toLocaleString()}
                     </div>
                   </div>
                 </div>
@@ -1244,7 +1250,7 @@ export const SetupScoringViewer: React.FC = () => {
                     <span className="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 text-xs font-bold border border-rose-500/40">
                       STRUCTURAL INVALIDATION (STOP LOSS)
                     </span>
-                    <span className="text-xs text-slate-400">0.5×ATR Buffer: ${(0.5 * atr).toFixed(1)}</span>
+                    <span className="text-xs text-slate-400">0.5×ATR Buffer: ${symbol === 'EUR/USD' || currentPrice < 10 ? (0.5 * atr).toFixed(4) : (0.5 * atr).toFixed(1)}</span>
                   </div>
                   <p className="text-xs text-rose-300/80 mt-1">
                     {tradePlan.invalidationRationale}
@@ -1252,7 +1258,7 @@ export const SetupScoringViewer: React.FC = () => {
                 </div>
                 <div className="text-right">
                   <div className="text-base font-bold text-rose-400">
-                    ${tradePlan.invalidationSL.toLocaleString()}
+                    ${symbol === 'EUR/USD' || currentPrice < 10 ? tradePlan.invalidationSL.toFixed(4) : tradePlan.invalidationSL.toLocaleString()}
                   </div>
                   <div className="text-[11px] text-rose-400/80">
                     -{tradePlan.stopDistPct.toFixed(2)}% risk distance
@@ -1371,6 +1377,7 @@ export const SetupScoringViewer: React.FC = () => {
                     <label className="text-xs text-slate-400 font-mono">Entry Price ($):</label>
                     <input
                       type="number"
+                      step={symbol === 'EUR/USD' || currentPrice < 10 ? "0.0001" : "any"}
                       value={calcEntry}
                       onChange={(e) => setCalcEntry(parseFloat(e.target.value) || 0)}
                       className="w-full bg-[#0F1420] border border-slate-700 rounded px-3 py-2 text-white font-mono text-xs focus:outline-none focus:border-emerald-500"
@@ -1380,6 +1387,7 @@ export const SetupScoringViewer: React.FC = () => {
                     <label className="text-xs text-slate-400 font-mono">Stop Loss ($):</label>
                     <input
                       type="number"
+                      step={symbol === 'EUR/USD' || currentPrice < 10 ? "0.0001" : "any"}
                       value={calcStopLoss}
                       onChange={(e) => setCalcStopLoss(parseFloat(e.target.value) || 0)}
                       className="w-full bg-[#0F1420] border border-slate-700 rounded px-3 py-2 text-rose-300 font-mono text-xs focus:outline-none focus:border-rose-500"
@@ -1428,7 +1436,7 @@ export const SetupScoringViewer: React.FC = () => {
                   <div className="bg-[#07090E] p-4 rounded-lg border border-slate-800">
                     <div className="text-[11px] font-mono text-slate-500">EST. LIQUIDATION PRICE</div>
                     <div className="text-xl font-bold font-mono text-slate-200 mt-1">
-                      ${positionSizing.estLiq.toLocaleString()}
+                      ${symbol === 'EUR/USD' || currentPrice < 10 ? positionSizing.estLiq.toFixed(4) : positionSizing.estLiq.toLocaleString()}
                     </div>
                     <div className="text-[10px] font-mono mt-1 text-slate-400">
                       Buffer: {positionSizing.liqBufferPct.toFixed(1)}% ({positionSizing.safeFromStop ? 'SL triggers first' : 'Liquidation risk!'})
@@ -1449,9 +1457,9 @@ export const SetupScoringViewer: React.FC = () => {
                     />
                   </div>
                   <div className="flex justify-between text-[11px] font-mono text-slate-500">
-                    <span>Entry: ${calcEntry.toLocaleString()}</span>
-                    <span className="text-rose-400 font-semibold">Stop Loss: ${calcStopLoss.toLocaleString()}</span>
-                    <span className="text-slate-400">Liquidation: ${positionSizing.estLiq.toLocaleString()}</span>
+                    <span>Entry: ${symbol === 'EUR/USD' || currentPrice < 10 ? calcEntry.toFixed(4) : calcEntry.toLocaleString()}</span>
+                    <span className="text-rose-400 font-semibold">Stop Loss: ${symbol === 'EUR/USD' || currentPrice < 10 ? calcStopLoss.toFixed(4) : calcStopLoss.toLocaleString()}</span>
+                    <span className="text-slate-400">Liquidation: ${symbol === 'EUR/USD' || currentPrice < 10 ? positionSizing.estLiq.toFixed(4) : positionSizing.estLiq.toLocaleString()}</span>
                   </div>
                 </div>
               </div>

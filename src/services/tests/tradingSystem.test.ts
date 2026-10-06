@@ -33,6 +33,7 @@ import { runPaperBrokerTests } from './paperBroker.test';
 import { runStrategyLabAndReplayTests } from './strategyLabAndReplay.test';
 import { runFinancialCalculationTests } from './financialCalculations.test';
 import { runAuthAndSecurityTests } from './authAndSecurity.test';
+import { runStrategyEngineTests } from './strategyEngine.test';
 
 export async function runAllTests(): Promise<{ passed: number; failed: number; results: string[] }> {
   const results: string[] = [];
@@ -163,6 +164,12 @@ export async function runAllTests(): Promise<{ passed: number; failed: number; r
   passed += secSuite.passed;
   failed += secSuite.failed;
   results.push(...secSuite.results);
+
+  // 12-Strategy Core Engine Verification & Test Matrix Suite
+  const stratSuite = await runStrategyEngineTests();
+  passed += stratSuite.passed;
+  failed += stratSuite.failed;
+  results.push(...stratSuite.results);
 
   return { passed, failed, results };
 }

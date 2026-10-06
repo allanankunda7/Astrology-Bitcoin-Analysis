@@ -38,6 +38,8 @@ export async function runStrategyLabAndReplayTests(): Promise<{ passed: number; 
   const createdStrat = strategyLab.createStrategy({
     name: 'Test Trend Momentum',
     description: 'Algorithmic momentum test strategy',
+    category: 'TREND',
+    validationStatus: 'EXPERIMENTAL',
     asset: 'BTC/USDT',
     timeframe: '4h',
     direction: 'BOTH',

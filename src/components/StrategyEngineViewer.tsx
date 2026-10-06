@@ -1,4 +1,17 @@
-import React, { useState } from 'react';
+/**
+ * src/components/StrategyEngineViewer.tsx
+ * Professional Multi-Strategy Signal Generator & Confluence Evaluator
+ * 
+ * Features:
+ * - 12 Core Institutional Strategy Families with Category Filter Ribbon
+ * - Market Regime Router with active regime recommendations and deprioritized alerts
+ * - Strategy Conflict Detection Banner (detects contradictory signals and flags WAIT)
+ * - Transparent 7-Factor Confluence Scoring (Strategy Score out of 100)
+ * - Invalidation Criteria & Counter-Evidence for every strategy
+ * - 1-Click Execution to Centralized Risk Calculator and Paper Broker
+ */
+
+import React, { useState, useMemo } from 'react';
 import {
   Sliders,
   CheckCircle2,
@@ -7,28 +20,31 @@ import {
   Target,
   ShieldAlert,
   Info,
-  ChevronDown,
   ChevronRight,
   TrendingUp,
   TrendingDown,
   Layers,
-  HelpCircle,
-  Clock,
-  Sparkles
+  Sparkles,
+  BarChart2,
+  Compass,
+  ArrowRight
 } from 'lucide-react';
 import {
   StrategySignal,
   AVAILABLE_STRATEGIES,
-  StrategyDefinition
+  StrategyDefinition,
+  detectStrategyConflicts,
+  calculateConfluenceScore,
+  routeStrategiesByRegime
 } from '../services/strategies';
-import { INDICATOR_EXPLANATIONS } from '../services/indicators';
 
 interface StrategyEngineViewerProps {
   activeSignal: StrategySignal;
   allSignals: StrategySignal[];
   symbol: string;
   timeframe: string;
-  onExecuteSimulatedTrade?: (action: 'LONG' | 'SHORT', entry: number, sl: number, tp: number) => void;
+  onExecuteSimulatedTrade?: (action: 'LONG' | 'SHORT', entry: number, sl: number, tp: number, stratName?: string) => void;
+  onOpenStrategyLab?: () => void;
 }
 
 export const StrategyEngineViewer: React.FC<StrategyEngineViewerProps> = ({
@@ -36,25 +52,48 @@ export const StrategyEngineViewer: React.FC<StrategyEngineViewerProps> = ({
   allSignals,
   symbol,
   timeframe,
-  onExecuteSimulatedTrade
+  onExecuteSimulatedTrade,
+  onOpenStrategyLab
 }) => {
   const [selectedStrategyId, setSelectedStrategyId] = useState<string>(activeSignal.strategyId);
+  const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
   const [showExplanationMode, setShowExplanationMode] = useState<boolean>(true);
   const [enabledStrategies, setEnabledStrategies] = useState<Record<string, boolean>>(() => {
     const init: Record<string, boolean> = {};
-    AVAILABLE_STRATEGIES.forEach(s => { init[s.id] = s.enabled; });
+    AVAILABLE_STRATEGIES.forEach((s) => { init[s.id] = s.enabled; });
     return init;
   });
 
   const toggleStrategy = (id: string) => {
-    setEnabledStrategies(prev => ({ ...prev, [id]: !prev[id] }));
-    const s = AVAILABLE_STRATEGIES.find(x => x.id === id);
+    setEnabledStrategies((prev) => ({ ...prev, [id]: !prev[id] }));
+    const s = AVAILABLE_STRATEGIES.find((x) => x.id === id);
     if (s) s.enabled = !s.enabled;
   };
 
-  const displayedSignal = allSignals.find(s => s.strategyId === selectedStrategyId) || activeSignal;
+  const displayedSignal = useMemo(() => {
+    return allSignals.find((s) => s.strategyId === selectedStrategyId) || activeSignal;
+  }, [allSignals, selectedStrategyId, activeSignal]);
+
   const isLong = displayedSignal.action === 'LONG SETUP';
   const isShort = displayedSignal.action === 'SHORT SETUP';
+
+  // Strategy Conflict Detection
+  const conflictReport = useMemo(() => {
+    return detectStrategyConflicts(allSignals);
+  }, [allSignals]);
+
+  // Market Regime Routing
+  const regimeRouting = useMemo(() => {
+    return routeStrategiesByRegime(displayedSignal.regime.regime);
+  }, [displayedSignal.regime.regime]);
+
+  // Filtered Strategies
+  const filteredStrategies = useMemo(() => {
+    if (selectedCategory === 'ALL') return AVAILABLE_STRATEGIES;
+    return AVAILABLE_STRATEGIES.filter((s) => s.category.toUpperCase() === selectedCategory.toUpperCase());
+  }, [selectedCategory]);
+
+  const categories = ['ALL', 'TREND', 'BREAKOUT', 'REVERSION', 'MOMENTUM', 'STRUCTURE', 'MULTI-TIMEFRAME'];
 
   return (
     <div className="space-y-6">
@@ -67,21 +106,30 @@ export const StrategyEngineViewer: React.FC<StrategyEngineViewerProps> = ({
                 Rule-Based Quantitative Strategy Engine
               </span>
               <span className="text-slate-500 text-xs font-mono">
-                {symbol} · {timeframe} · 8 Modular Strategies
+                {symbol} · {timeframe} · 12 Core Strategy Families
               </span>
             </div>
             <h2 className="text-xl font-bold text-white tracking-tight flex items-center gap-2">
               <Sliders className="w-5 h-5 text-amber-400" />
-              <span>Multi-Strategy Signal Generator & Confluence Evaluator</span>
+              <span>12 Modular Trading Strategies & Confluence Hub</span>
             </h2>
             <p className="text-xs text-slate-400 mt-1 max-w-3xl leading-relaxed">
               Transparent, deterministic algorithmic evaluations. Signals reflect strict quantitative rule alignment,
-              not subjective opinions or guaranteed market certainty. Every signal includes clear invalidation criteria and counter-evidence.
+              not subjective opinions. Features automated Market Regime Routing, multi-strategy conflict detection, and transparent factor scoring.
             </p>
           </div>
 
-          {/* Quick Toggle for Explanation Mode */}
+          {/* Quick Actions */}
           <div className="flex items-center gap-2">
+            {onOpenStrategyLab && (
+              <button
+                onClick={onOpenStrategyLab}
+                className="px-3 py-1.5 rounded text-xs font-mono font-semibold bg-cyan-950/60 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-900/60 transition-all flex items-center gap-1.5"
+              >
+                <Compass className="w-3.5 h-3.5 text-cyan-400" />
+                <span>Open Strategy Lab</span>
+              </button>
+            )}
             <button
               onClick={() => setShowExplanationMode(!showExplanationMode)}
               className={`px-3 py-1.5 rounded text-xs font-mono font-semibold border transition-all flex items-center gap-1.5 ${
@@ -96,31 +144,87 @@ export const StrategyEngineViewer: React.FC<StrategyEngineViewerProps> = ({
           </div>
         </div>
 
-        {/* 2. Modular Strategy Switcher Ribbon */}
-        <div className="mt-4 pt-4 border-t border-slate-800/80">
-          <div className="text-[11px] font-mono text-slate-400 mb-2 flex items-center justify-between">
-            <span>SELECT STRATEGY VIEW & TOGGLE MODULAR ENGINES:</span>
-            <span className="text-slate-500">Enable/disable strategies independently</span>
+        {/* 2. Market Regime Router Banner */}
+        <div className="mt-4 p-3 bg-[#07090E] rounded border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs font-mono">
+          <div className="flex items-center gap-2">
+            <span className="text-slate-400">Current Market Regime:</span>
+            <span className="px-2 py-0.5 rounded font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+              {regimeRouting.currentRegime}
+            </span>
+            <span className="text-slate-500 text-[11px] hidden sm:inline">
+              ({displayedSignal.regime.trendStrength}% Trend Velocity)
+            </span>
           </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            {AVAILABLE_STRATEGIES.map(strat => {
-              const sig = allSignals.find(s => s.strategyId === strat.id);
-              const isSelected = selectedStrategyId === strat.id;
-              const isEnabled = enabledStrategies[strat.id] ?? true;
-
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-slate-400 text-[11px]">Recommended:</span>
+            {regimeRouting.primaryStrategies.slice(0, 3).map((stId) => {
+              const stratObj = AVAILABLE_STRATEGIES.find((s) => s.id === stId);
               return (
-                <div
-                  key={strat.id}
-                  onClick={() => setSelectedStrategyId(strat.id)}
-                  className={`p-2.5 rounded border text-xs font-mono cursor-pointer transition-all flex flex-col justify-between ${
-                    isSelected
-                      ? 'bg-amber-500/15 border-amber-500/50 text-white shadow-sm'
-                      : 'bg-[#07090E] border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200'
-                  } ${!isEnabled ? 'opacity-40' : ''}`}
-                >
+                <span key={stId} className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-950/50 text-emerald-300 border border-emerald-500/30">
+                  ✓ {stratObj ? stratObj.name.split('(')[0].trim() : stId}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* 3. Strategy Conflict Alert Banner */}
+        {conflictReport.hasConflict && (
+          <div className="mt-3 p-3 bg-amber-950/30 border border-amber-500/40 rounded flex items-start gap-3 text-xs font-mono">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <div className="font-bold text-amber-300 flex items-center gap-2">
+                <span>SIGNAL CONFLICT DETECTED</span>
+                <span className="px-1.5 py-0.2 rounded text-[10px] bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                  RECOMMENDATION: WAIT
+                </span>
+              </div>
+              <p className="text-slate-300 text-[11px] leading-relaxed">
+                {conflictReport.summary} {conflictReport.conflictingDetails[0]}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* 4. Category Filter Ribbon */}
+        <div className="mt-4 pt-4 border-t border-slate-800/80 flex items-center gap-1.5 overflow-x-auto pb-1 text-xs font-mono">
+          <span className="text-slate-500 text-[11px] mr-2 shrink-0">FILTER CATEGORY:</span>
+          {categories.map((cat) => (
+            <button
+              key={cat}
+              onClick={() => setSelectedCategory(cat)}
+              className={`px-2.5 py-1 rounded transition-all shrink-0 ${
+                selectedCategory === cat
+                  ? 'bg-amber-500 text-slate-950 font-bold'
+                  : 'bg-[#07090E] text-slate-400 hover:text-slate-200 border border-slate-800'
+              }`}
+            >
+              {cat}
+            </button>
+          ))}
+        </div>
+
+        {/* 5. Strategy Cards Grid (All 12 Core Strategies) */}
+        <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+          {filteredStrategies.map((strat) => {
+            const sig = allSignals.find((s) => s.strategyId === strat.id);
+            const isSelected = selectedStrategyId === strat.id;
+            const isEnabled = enabledStrategies[strat.id] ?? true;
+            const isRecommended = regimeRouting.primaryStrategies.includes(strat.id);
+
+            return (
+              <div
+                key={strat.id}
+                onClick={() => setSelectedStrategyId(strat.id)}
+                className={`p-2.5 rounded border text-xs font-mono cursor-pointer transition-all flex flex-col justify-between ${
+                  isSelected
+                    ? 'bg-amber-500/15 border-amber-500/50 text-white shadow-sm'
+                    : 'bg-[#07090E] border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+                } ${!isEnabled ? 'opacity-40' : ''}`}
+              >
+                <div>
                   <div className="flex items-center justify-between mb-1">
-                    <span className="font-semibold truncate max-w-[140px]">{strat.name.split('(')[0]}</span>
+                    <span className="font-semibold truncate max-w-[130px]">{strat.name.split('(')[0]}</span>
                     <input
                       type="checkbox"
                       checked={isEnabled}
@@ -132,68 +236,92 @@ export const StrategyEngineViewer: React.FC<StrategyEngineViewerProps> = ({
                       title={isEnabled ? 'Disable this strategy' : 'Enable this strategy'}
                     />
                   </div>
-
-                  <div className="flex items-center justify-between text-[10px] mt-1 pt-1 border-t border-slate-800/50">
-                    <span className={`font-bold ${
-                      sig?.action === 'LONG SETUP' ? 'text-emerald-400' :
-                      sig?.action === 'SHORT SETUP' ? 'text-rose-400' :
-                      sig?.action === 'WAIT' ? 'text-amber-400' : 'text-slate-500'
-                    }`}>
-                      {sig?.action || 'NO SETUP'}
-                    </span>
-                    <span className="text-slate-500">{sig?.confidenceScore || 0}% score</span>
+                  <div className="text-[10px] text-slate-500 flex items-center justify-between">
+                    <span>{strat.category}</span>
+                    {isRecommended && (
+                      <span className="text-[9px] text-emerald-400 font-semibold">REC</span>
+                    )}
                   </div>
                 </div>
-              );
-            })}
-          </div>
+
+                <div className="flex items-center justify-between text-[10px] mt-2 pt-1 border-t border-slate-800/50">
+                  <span
+                    className={`font-bold ${
+                      sig?.action === 'LONG SETUP'
+                        ? 'text-emerald-400'
+                        : sig?.action === 'SHORT SETUP'
+                        ? 'text-rose-400'
+                        : sig?.action === 'WAIT'
+                        ? 'text-amber-400'
+                        : 'text-slate-500'
+                    }`}
+                  >
+                    {sig?.action || 'NO SETUP'}
+                  </span>
+                  <span className="text-slate-500">{sig?.confidenceScore || 0} pts</span>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
 
       {/* 3. Active Selected Signal Detail Card */}
-      <div className={`bg-[#0F1420] border rounded-lg p-5 space-y-5 transition-all ${
-        isLong
-          ? 'border-emerald-500/40 ring-1 ring-emerald-500/20'
-          : isShort
-          ? 'border-rose-500/40 ring-1 ring-rose-500/20'
-          : 'border-slate-800'
-      }`}>
+      <div
+        className={`bg-[#0F1420] border rounded-lg p-5 space-y-5 transition-all ${
+          isLong
+            ? 'border-emerald-500/40 ring-1 ring-emerald-500/20'
+            : isShort
+            ? 'border-rose-500/40 ring-1 ring-rose-500/20'
+            : 'border-slate-800'
+        }`}
+      >
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800">
           <div>
             <div className="flex items-center gap-2 mb-1">
-              <span className={`px-2.5 py-0.5 rounded text-xs font-mono font-bold flex items-center gap-1.5 ${
-                isLong
-                  ? 'bg-emerald-500 text-slate-950'
-                  : isShort
-                  ? 'bg-rose-500 text-white'
-                  : 'bg-slate-800 text-slate-300'
-              }`}>
+              <span
+                className={`px-2.5 py-0.5 rounded text-xs font-mono font-bold flex items-center gap-1.5 ${
+                  isLong
+                    ? 'bg-emerald-500 text-slate-950'
+                    : isShort
+                    ? 'bg-rose-500 text-white'
+                    : 'bg-slate-800 text-slate-300'
+                }`}
+              >
                 {isLong ? <TrendingUp className="w-3.5 h-3.5" /> : isShort ? <TrendingDown className="w-3.5 h-3.5" /> : null}
                 <span>{displayedSignal.action}</span>
               </span>
               <span className="text-xs font-mono text-slate-400">
                 via {displayedSignal.strategyName}
               </span>
+              {displayedSignal.mode && (
+                <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-purple-950/60 border border-purple-500/40 text-purple-300">
+                  {displayedSignal.mode}
+                </span>
+              )}
             </div>
             <div className="text-xs text-slate-400 font-mono mt-1">
-              Market Regime: <strong className="text-white">{displayedSignal.regime.regime}</strong> ({displayedSignal.regime.trendStrength}% Trend Strength)
+              Market Regime: <strong className="text-white">{displayedSignal.regime.regime}</strong> ({displayedSignal.regime.trendStrength}% Trend Velocity)
             </div>
           </div>
 
-          {/* Confidence Score Pill */}
+          {/* Strategy Score & Execute */}
           <div className="flex items-center gap-3">
             <div className="text-right font-mono">
-              <span className="text-[10px] text-slate-500 block">RULE CONFLUENCE SCORE</span>
+              <span className="text-[10px] text-slate-500 block">STRATEGY SCORE</span>
               <span className="text-base font-bold text-white">{displayedSignal.confidenceScore} / 100</span>
             </div>
             {onExecuteSimulatedTrade && (isLong || isShort) && (
               <button
-                onClick={() => onExecuteSimulatedTrade(
-                  isLong ? 'LONG' : 'SHORT',
-                  displayedSignal.entryMid,
-                  displayedSignal.stopLoss,
-                  displayedSignal.target2
-                )}
+                onClick={() =>
+                  onExecuteSimulatedTrade(
+                    isLong ? 'LONG' : 'SHORT',
+                    displayedSignal.entryMid,
+                    displayedSignal.stopLoss,
+                    displayedSignal.target2,
+                    displayedSignal.strategyName
+                  )
+                }
                 className={`px-4 py-2 rounded text-xs font-bold font-mono transition-all flex items-center gap-2 shadow-md ${
                   isLong
                     ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'
@@ -212,28 +340,28 @@ export const StrategyEngineViewer: React.FC<StrategyEngineViewerProps> = ({
           <div className="bg-[#07090E] p-3 rounded border border-slate-800">
             <div className="text-[10px] text-slate-500">RECOMMENDED ENTRY</div>
             <div className="text-sm font-bold text-white mt-0.5">
-              ${displayedSignal.entryMin.toLocaleString()} – ${displayedSignal.entryMax.toLocaleString()}
+              ${displayedSignal.entryMin > 0 ? displayedSignal.entryMin.toLocaleString() : '—'} – ${displayedSignal.entryMax > 0 ? displayedSignal.entryMax.toLocaleString() : '—'}
             </div>
           </div>
 
           <div className="bg-[#07090E] p-3 rounded border border-rose-950/40 border-l-2 border-l-rose-500">
             <div className="text-[10px] text-rose-400 font-semibold">HARD STOP-LOSS</div>
             <div className="text-sm font-bold text-rose-300 mt-0.5">
-              ${displayedSignal.stopLoss.toLocaleString()} ({displayedSignal.stopDistancePct}%)
+              ${displayedSignal.stopLoss > 0 ? displayedSignal.stopLoss.toLocaleString() : '—'} ({displayedSignal.stopDistancePct}%)
             </div>
           </div>
 
           <div className="bg-[#07090E] p-3 rounded border border-emerald-950/40 border-l-2 border-l-emerald-500">
             <div className="text-[10px] text-emerald-400 font-semibold">TARGET 1 (CONSERVATIVE)</div>
             <div className="text-sm font-bold text-emerald-300 mt-0.5">
-              ${displayedSignal.target1.toLocaleString()}
+              ${displayedSignal.target1 > 0 ? displayedSignal.target1.toLocaleString() : '—'}
             </div>
           </div>
 
           <div className="bg-[#07090E] p-3 rounded border border-emerald-950/40 border-l-2 border-l-emerald-500">
             <div className="text-[10px] text-emerald-400 font-semibold">TARGET 2 (STANDARD)</div>
             <div className="text-sm font-bold text-emerald-300 mt-0.5">
-              ${displayedSignal.target2.toLocaleString()}
+              ${displayedSignal.target2 > 0 ? displayedSignal.target2.toLocaleString() : '—'}
             </div>
           </div>
 
@@ -254,12 +382,16 @@ export const StrategyEngineViewer: React.FC<StrategyEngineViewerProps> = ({
               <span>REASONS SUPPORTING SETUP ({displayedSignal.reasonsSupporting.length})</span>
             </div>
             <ul className="space-y-1.5 text-slate-300 text-[11px]">
-              {displayedSignal.reasonsSupporting.map((r, i) => (
-                <li key={i} className="flex items-start gap-2">
-                  <span className="text-emerald-400 shrink-0">✓</span>
-                  <span>{r}</span>
-                </li>
-              ))}
+              {displayedSignal.reasonsSupporting.length > 0 ? (
+                displayedSignal.reasonsSupporting.map((r, i) => (
+                  <li key={i} className="flex items-start gap-2">
+                    <span className="text-emerald-400 shrink-0">✓</span>
+                    <span>{r}</span>
+                  </li>
+                ))
+              ) : (
+                <li className="text-slate-500">No active supporting factors at current candle close.</li>
+              )}
             </ul>
           </div>
 
@@ -270,12 +402,16 @@ export const StrategyEngineViewer: React.FC<StrategyEngineViewerProps> = ({
               <span>REASONS AGAINST SETUP & RISK FACTORS ({displayedSignal.reasonsAgainst.length})</span>
             </div>
             <ul className="space-y-1.5 text-slate-400 text-[11px]">
-              {displayedSignal.reasonsAgainst.map((r, i) => (
-                <li key={i} className="flex items-start gap-2">
-                  <span className="text-amber-400 shrink-0">!</span>
-                  <span>{r}</span>
-                </li>
-              ))}
+              {displayedSignal.reasonsAgainst.length > 0 ? (
+                displayedSignal.reasonsAgainst.map((r, i) => (
+                  <li key={i} className="flex items-start gap-2">
+                    <span className="text-amber-400 shrink-0">!</span>
+                    <span>{r}</span>
+                  </li>
+                ))
+              ) : (
+                <li className="text-slate-500">No contrary risk flags currently active.</li>
+              )}
             </ul>
           </div>
         </div>
@@ -309,9 +445,12 @@ export const StrategyEngineViewer: React.FC<StrategyEngineViewerProps> = ({
             <div className="bg-[#07090E] p-3 rounded border border-slate-800 space-y-1">
               <span className="text-[10px] text-slate-500 uppercase">1. Trend Confirmation</span>
               <p className="text-slate-300 text-[11px] leading-relaxed">
-                Evaluates EMA 21 and EMA 50 alignment against closing price action.
-                {isLong ? ' Fast EMA 21 above EMA 50 confirms upward velocity.' :
-                 isShort ? ' Fast EMA 21 below EMA 50 confirms downward drift.' : ' Trend filters are currently neutral.'}
+                Evaluates EMA 20, 50, and 200 alignment against closing price action.
+                {isLong
+                  ? ' Fast EMA 20 above EMA 50 confirms upward velocity.'
+                  : isShort
+                  ? ' Fast EMA 20 below EMA 50 confirms downward drift.'
+                  : ' Trend filters are currently neutral.'}
               </p>
             </div>
 
@@ -336,7 +475,7 @@ export const StrategyEngineViewer: React.FC<StrategyEngineViewerProps> = ({
           <div className="p-3 rounded bg-[#07090E] border border-slate-800 text-[10px] text-slate-500 flex items-start gap-2">
             <Info className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
             <p className="leading-relaxed">
-              <strong>Educational Trading Disclaimer:</strong> The confidence score is a rule-counting alignment metric,
+              <strong>Educational Trading Disclaimer:</strong> The Strategy Score is a rule-counting alignment metric,
               NOT a statistical win rate or probability of future profit. Financial markets are subject to macroeconomic regime shifts,
               liquidity shocks, and volatility expansions. Always use strict stop losses and risk &le; 1-2% per trade.
             </p>

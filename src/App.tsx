@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Terminal,
   Activity,
@@ -64,6 +64,9 @@ import { PaperOrderConfirmationModal, ProposedPaperTrade } from './components/Pa
 import { PaperTradingDashboard } from './components/PaperTradingDashboard';
 import { PaperTradingClient } from './services/paperTradingClient';
 import { PlaceOrderParams } from './broker/types';
+import { StrategyEngineViewer } from './components/StrategyEngineViewer';
+import { StrategyLabViewer } from './components/StrategyLabViewer';
+import { evaluateAllStrategies } from './services/strategies';
 
 // ==========================================
 // ASSET DEFINITIONS & TIMEFRAMES
@@ -191,8 +194,11 @@ function generateCandlesForTimeframe(basePrice: number, tf: Timeframe, count: nu
     '1W': 604800
   };
   const stepSec = tfSeconds[tf];
+  const isForex = basePrice < 10;
+  const factor = isForex ? 10000 : 100;
+  const driftRate = isForex ? 0.00015 : 0.0018;
   
-  let currPrice = basePrice * 0.88;
+  let currPrice = basePrice * (1 - (count * driftRate));
   const currentAligned = Math.floor(nowSec / stepSec) * stepSec;
   const startSec = currentAligned - (count - 1) * stepSec;
 
@@ -200,23 +206,25 @@ function generateCandlesForTimeframe(basePrice: number, tf: Timeframe, count: nu
     // Strictly increasing timestamp in seconds (UTCTimestamp)
     const timeSec = (startSec + i * stepSec) as UTCTimestamp;
 
-    // Seeded random walk with slight upward drift
+    // Seeded random walk with slight drift
     const pseudoRand = Math.sin(i * 12.9898 + (basePrice % 100)) * 43758.5453;
     const norm = (pseudoRand - Math.floor(pseudoRand)) - 0.47;
-    const change = currPrice * (norm * 0.024);
+    const change = currPrice * (norm * (isForex ? 0.0012 : 0.024));
 
     const open = currPrice;
-    const close = Math.max(10, open + change);
-    const high = Math.max(open, close) + Math.abs(change) * 0.6;
-    const low = Math.min(open, close) - Math.abs(change) * 0.5;
+    const close = Math.max(0.0001, open + change);
+    const wickHigh = Math.abs(change) * 0.6;
+    const wickLow = Math.abs(change) * 0.5;
+    const high = Math.max(open, close) + wickHigh;
+    const low = Math.min(open, close) - wickLow;
     const volume = Math.floor(25000000 + Math.abs(change * 2000000));
 
     candles.push({
       time: timeSec,
-      open: Math.round(open * 100) / 100,
-      high: Math.round(high * 100) / 100,
-      low: Math.round(low * 100) / 100,
-      close: Math.round(close * 100) / 100,
+      open: Math.round(open * factor) / factor,
+      high: Math.round(high * factor) / factor,
+      low: Math.round(low * factor) / factor,
+      close: Math.round(close * factor) / factor,
       volume
     });
 
@@ -233,7 +241,8 @@ function generateCandlesForTimeframe(basePrice: number, tf: Timeframe, count: nu
 
 export default function App() {
   // Navigation
-  const [activeTab, setActiveTab] = useState<'terminal' | 'all_charts' | 'news' | 'setups' | 'backtester' | 'analyst' | 'paper' | 'phase1' | 'phase2' | 'phase3' | 'phase4' | 'phase5'>('all_charts');
+  const [activeTab, setActiveTab] = useState<'terminal' | 'all_charts' | 'news' | 'setups' | 'strategy_lab' | 'backtester' | 'analyst' | 'paper' | 'phase1' | 'phase2' | 'phase3' | 'phase4' | 'phase5'>('all_charts');
+  const [labSubView, setLabSubView] = useState<'engine' | 'lab'>('engine');
 
   // Selected Market & Timeframe
   const [selectedSymbol, setSelectedSymbol] = useState<string>('BTC/USDT');
@@ -470,36 +479,77 @@ export default function App() {
   // Active Candlesticks
   const candleSeries = liveCandles;
 
-  // Support & Resistance dynamically derived from candles
+  // Asset-specific price formatting function ensuring Forex (EUR/USD) never gets rounded to integer
+  const formatAssetPrice = (price: number) => {
+    if (activeAsset.category === 'Forex' || activeAsset.symbol === 'EUR/USD' || price < 10) {
+      return price.toFixed(4);
+    }
+    if (price >= 1000) {
+      return price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    return price.toFixed(2);
+  };
+
+  // Support & Resistance dynamically derived from candles with asset-specific precision
   const { supportLevel, resistanceLevel } = useMemo(() => {
+    if (candleSeries.length === 0) return { supportLevel: 0, resistanceLevel: 0 };
     const closes = candleSeries.map(c => c.close);
     const maxClose = Math.max(...closes);
     const minClose = Math.min(...closes);
     const curr = activeAsset.price;
+    const isForex = activeAsset.category === 'Forex' || activeAsset.symbol === 'EUR/USD';
+    const prec = isForex ? 4 : 2;
+    const fact = Math.pow(10, prec);
 
-    const res = Math.round((curr + (maxClose - curr) * 0.45) / 50) * 50;
-    const sup = Math.round((curr - (curr - minClose) * 0.45) / 50) * 50;
-    return { supportLevel: sup, resistanceLevel: res };
-  }, [candleSeries, activeAsset.price]);
+    const step = isForex ? 0.0010 : curr > 1000 ? 50 : curr > 50 ? 2 : 0.25;
+    const res = Math.round((curr + (maxClose - curr) * 0.45) / step) * step;
+    const sup = Math.round((curr - (curr - minClose) * 0.45) / step) * step;
+    return {
+      supportLevel: Math.round(Math.max(0.0001, sup) * fact) / fact,
+      resistanceLevel: Math.round(Math.max(0.0001, res) * fact) / fact,
+    };
+  }, [candleSeries, activeAsset.price, activeAsset.symbol, activeAsset.category]);
 
-  // Synchronize risk calculator default values when asset changes
+  // Synchronize risk calculator default values when asset changes (preserves user inputs during live tick updates)
+  const lastSelectedAssetRef = useRef<string>('');
   useEffect(() => {
-    setCalcEntry(activeAsset.price);
-    setCalcStopLoss(Math.round(activeAsset.price * 0.968 / 10) * 10);
-    setCalcTarget(Math.round(activeAsset.price * 1.072 / 10) * 10);
-  }, [activeAsset.symbol, activeAsset.price]);
+    if (lastSelectedAssetRef.current !== activeAsset.symbol) {
+      lastSelectedAssetRef.current = activeAsset.symbol;
+      const isForex = activeAsset.category === 'Forex' || activeAsset.symbol === 'EUR/USD';
+      const prec = isForex ? 4 : 2;
+      const fact = Math.pow(10, prec);
+
+      const slMult = isForex ? 0.9940 : 0.968;
+      const tpMult = isForex ? 1.0080 : 1.072;
+
+      setCalcEntry(Math.round(activeAsset.price * fact) / fact);
+      setCalcStopLoss(Math.round(activeAsset.price * slMult * fact) / fact);
+      setCalcTarget(Math.round(activeAsset.price * tpMult * fact) / fact);
+    }
+  }, [activeAsset.symbol, activeAsset.price, activeAsset.category]);
+
+  // 12-Strategy Modular Engine Result & Confluence Hub
+  const multiStrategyResult = useMemo(() => {
+    return evaluateAllStrategies(liveCandles, selectedSymbol, timeframe);
+  }, [liveCandles, selectedSymbol, timeframe]);
 
   // Active Strategy Signal Evaluation (Dynamic BUY / SELL / WAIT)
   const strategySignal = useMemo(() => {
     const currPrice = activeAsset.price;
+    const isForex = activeAsset.category === 'Forex' || activeAsset.symbol === 'EUR/USD';
+    const prec = isForex ? 4 : 2;
+    const fact = Math.pow(10, prec);
+    const roundP = (v: number) => Math.round(v * fact) / fact;
+    const fmt = (v: number) => isForex ? v.toFixed(4) : v >= 1000 ? v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : v.toFixed(2);
+
     const isBearish = activeAsset.change24h < -1.0;
     let action: 'BUY' | 'SELL' | 'WAIT' = isBearish ? 'SELL' : 'BUY';
-    let entryMin = Math.round(currPrice * 0.995);
-    let entryMax = Math.round(currPrice * 1.002);
-    let stopLoss = Math.round(currPrice * 0.968);
-    let target1 = Math.round(currPrice * 1.034);
-    let target2 = Math.round(currPrice * 1.072);
-    let target3 = Math.round(currPrice * 1.12);
+    let entryMin = roundP(currPrice * (isForex ? 0.9985 : 0.995));
+    let entryMax = roundP(currPrice * (isForex ? 1.0010 : 1.002));
+    let stopLoss = roundP(currPrice * (isForex ? 0.9940 : 0.968));
+    let target1 = roundP(currPrice * (isForex ? 1.0045 : 1.034));
+    let target2 = roundP(currPrice * (isForex ? 1.0080 : 1.072));
+    let target3 = roundP(currPrice * (isForex ? 1.0130 : 1.12));
     let score = 8;
     let instruction = '';
     let invalidation = '';
@@ -508,77 +558,77 @@ export default function App() {
     if (selectedStrategy === 'Pullback Continuation') {
       action = 'BUY';
       score = 8;
-      instruction = `ENTER BUY (LONG): Place limit entry order between $${entryMin.toLocaleString()} and $${entryMax.toLocaleString()}. Hard Stop-Loss at $${stopLoss.toLocaleString()}. Take Profit at Target 1 ($${target1.toLocaleString()}) and Target 2 ($${target2.toLocaleString()}).`;
-      invalidation = `A 4-Hour candle close below $${stopLoss.toLocaleString()} invalidates the bullish market structure.`;
+      instruction = `ENTER BUY (LONG): Place limit entry order between $${fmt(entryMin)} and $${fmt(entryMax)}. Hard Stop-Loss at $${fmt(stopLoss)}. Take Profit at Target 1 ($${fmt(target1)}) and Target 2 ($${fmt(target2)}).`;
+      invalidation = `A 4-Hour candle close below $${fmt(stopLoss)} invalidates the bullish market structure.`;
       rules = [
-        { name: 'Macro Bullish Baseline (Price > EMA 200)', status: 'MET', detail: `Price ($${currPrice.toLocaleString()}) > EMA 200 ($${(currPrice * 0.92).toFixed(0)})` },
+        { name: 'Macro Bullish Baseline (Price > EMA 200)', status: 'MET', detail: `Price ($${fmt(currPrice)}) > EMA 200 ($${fmt(currPrice * 0.985)})` },
         { name: 'EMA Alignment (EMA 21 > EMA 50)', status: 'MET', detail: 'Golden intermediate slope intact' },
-        { name: 'Pullback into EMA 50 Support Zone', status: 'MET', detail: `Price within 1.2% of EMA 50 ($${(currPrice * 0.985).toFixed(0)})` },
-        { name: 'RSI Momentum Reset (40–60 Range)', status: 'MET', detail: 'RSI at 58.4 (recovering from oversold)' },
+        { name: 'Pullback into EMA 50 Support Zone', status: 'MET', detail: `Price within 0.3% of EMA 50 ($${fmt(currPrice * 0.997)})` },
+        { name: 'RSI Momentum Reset (40–60 Range)', status: 'MET', detail: 'RSI at 52.4 (recovering from oversold)' },
         { name: 'MACD Momentum Stabilization', status: 'PENDING', detail: 'Histogram deceleration in progress' }
       ];
     } else if (selectedStrategy === 'Trend Following') {
       action = 'BUY';
       score = 9;
-      entryMin = Math.round(currPrice * 0.998);
-      entryMax = Math.round(currPrice * 1.005);
-      stopLoss = Math.round(currPrice * 0.96);
-      target1 = Math.round(currPrice * 1.045);
-      target2 = Math.round(currPrice * 1.09);
-      target3 = Math.round(currPrice * 1.15);
-      instruction = `ENTER BUY (LONG): Trend following momentum confirmed. Market entry at $${currPrice.toLocaleString()} with trailing stop at $${stopLoss.toLocaleString()}.`;
+      entryMin = roundP(currPrice * (isForex ? 0.9990 : 0.998));
+      entryMax = roundP(currPrice * (isForex ? 1.0015 : 1.005));
+      stopLoss = roundP(currPrice * (isForex ? 0.9930 : 0.96));
+      target1 = roundP(currPrice * (isForex ? 1.0050 : 1.045));
+      target2 = roundP(currPrice * (isForex ? 1.0095 : 1.09));
+      target3 = roundP(currPrice * (isForex ? 1.0150 : 1.15));
+      instruction = `ENTER BUY (LONG): Trend following momentum confirmed. Market entry at $${fmt(currPrice)} with trailing stop at $${fmt(stopLoss)}.`;
       invalidation = `Moving average cross under EMA 200 signals macro trend break.`;
       rules = [
         { name: 'Moving Average Stack (Price > EMA 21 > EMA 50 > EMA 200)', status: 'MET', detail: 'All 3 moving averages ascending' },
-        { name: 'ADX Trend Strength > 25', status: 'MET', detail: 'ADX is 29.6 (strong directional impulse)' },
+        { name: 'ADX Trend Strength > 25', status: 'MET', detail: 'ADX is 27.4 (strong directional impulse)' },
         { name: 'MACD Positive Divergence', status: 'MET', detail: 'MACD line expanding above zero baseline' },
         { name: 'Higher High Market Structure', status: 'MET', detail: 'Clean swing highs validated' }
       ];
     } else if (selectedStrategy === 'Breakout Retest') {
       const res = resistanceLevel;
-      if (currPrice >= res * 0.99) {
+      if (currPrice >= res * (isForex ? 0.9990 : 0.99)) {
         action = 'BUY';
         score = 8;
-        entryMin = Math.round(res * 0.998);
-        entryMax = Math.round(res * 1.008);
-        stopLoss = Math.round(res * 0.975);
-        target1 = Math.round(res * 1.04);
-        target2 = Math.round(res * 1.085);
-        target3 = Math.round(res * 1.14);
-        instruction = `ENTER BUY (LONG) ON BREAKOUT: Buy upon confirmation of 4H close above resistance $${res.toLocaleString()}. Stop-Loss at $${stopLoss.toLocaleString()}.`;
-        invalidation = `Breakdown back below $${stopLoss.toLocaleString()} marks a liquidity trap / false breakout.`;
+        entryMin = roundP(res * (isForex ? 0.9995 : 0.998));
+        entryMax = roundP(res * (isForex ? 1.0015 : 1.008));
+        stopLoss = roundP(res * (isForex ? 0.9950 : 0.975));
+        target1 = roundP(res * (isForex ? 1.0050 : 1.04));
+        target2 = roundP(res * (isForex ? 1.0090 : 1.085));
+        target3 = roundP(res * (isForex ? 1.0150 : 1.14));
+        instruction = `ENTER BUY (LONG) ON BREAKOUT: Buy upon confirmation of 4H close above resistance $${fmt(res)}. Stop-Loss at $${fmt(stopLoss)}.`;
+        invalidation = `Breakdown back below $${fmt(stopLoss)} marks a liquidity trap / false breakout.`;
         rules = [
-          { name: `Resistance Boundary Test ($${res.toLocaleString()})`, status: 'MET', detail: 'Price testing key cluster' },
+          { name: `Resistance Boundary Test ($${fmt(res)})`, status: 'MET', detail: 'Price testing key cluster' },
           { name: 'Volume Expansion (1.4x 20MA)', status: 'MET', detail: 'Volume spike on push toward resistance' },
           { name: 'Clean Retest Confirmation', status: 'PENDING', detail: 'Wait for retest bar wick' }
         ];
       } else {
         action = 'WAIT';
         score = 4;
-        instruction = `WAIT / STAND ASIDE: Price is below resistance level ($${res.toLocaleString()}). Do not chase prematurely before a clear breakout.`;
+        instruction = `WAIT / STAND ASIDE: Price is below resistance level ($${fmt(res)}). Do not chase prematurely before a clear breakout.`;
         invalidation = 'No trade active.';
         rules = [
-          { name: 'Resistance Break', status: 'FAILED', detail: `Price is $${(res - currPrice).toFixed(0)} away from breakout level` },
+          { name: 'Resistance Break', status: 'FAILED', detail: `Price is $${fmt(res - currPrice)} away from breakout level` },
           { name: 'Volume Expansion', status: 'PENDING', detail: 'Volume currently normal' }
         ];
       }
     } else if (selectedStrategy === 'Mean Reversion') {
       action = 'WAIT';
       score = 4;
-      stopLoss = Math.round(currPrice * 0.97);
-      target1 = Math.round(currPrice * 1.02);
-      target2 = Math.round(currPrice * 1.04);
-      target3 = Math.round(currPrice * 1.06);
-      instruction = `WAIT / STAND ASIDE: RSI (58.4) is in healthy neutral zone. Mean reversion setups trigger only on extreme overbought (RSI > 72) or oversold (RSI < 28) conditions.`;
+      stopLoss = roundP(currPrice * (isForex ? 0.9950 : 0.97));
+      target1 = roundP(currPrice * (isForex ? 1.0030 : 1.02));
+      target2 = roundP(currPrice * (isForex ? 1.0060 : 1.04));
+      target3 = roundP(currPrice * (isForex ? 1.0090 : 1.06));
+      instruction = `WAIT / STAND ASIDE: RSI is in healthy neutral zone. Mean reversion setups trigger only on extreme overbought or oversold conditions.`;
       invalidation = 'No trade active.';
       rules = [
-        { name: 'RSI Extreme (< 30 or > 70)', status: 'FAILED', detail: 'RSI is 58.4 (Neutral)' },
+        { name: 'RSI Extreme (< 30 or > 70)', status: 'FAILED', detail: 'RSI is neutral' },
         { name: 'Bollinger Band Piercing', status: 'FAILED', detail: 'Price inside standard 2-sigma envelope' }
       ];
     } else if (selectedStrategy === 'MA Crossover') {
       action = 'BUY';
       score = 8;
-      instruction = `ENTER BUY (LONG): Golden EMA 21 / EMA 50 alignment. Enter at current market price $${currPrice.toLocaleString()} with stop at $${stopLoss.toLocaleString()}.`;
+      instruction = `ENTER BUY (LONG): Golden EMA 21 / EMA 50 alignment. Enter at current market price $${fmt(currPrice)} with stop at $${fmt(stopLoss)}.`;
       invalidation = 'Bearish cross of EMA 21 below EMA 50 invalidates setup.';
       rules = [
         { name: 'EMA 21 > EMA 50 Golden Cross', status: 'MET', detail: 'EMA 21 above EMA 50' },
@@ -605,7 +655,7 @@ export default function App() {
       invalidation,
       rules
     };
-  }, [activeAsset.price, selectedStrategy, resistanceLevel]);
+  }, [activeAsset.price, selectedStrategy, resistanceLevel, activeAsset.symbol, activeAsset.category, activeAsset.change24h]);
 
   // Risk Management Calculations
   const riskAnalysis = useMemo(() => {
@@ -667,30 +717,40 @@ export default function App() {
   };
 
   // 14-Step Trading Engine Flow -> Explicit User Confirmation -> PaperBroker
-  const handleOpenPosition = (side: 'LONG' | 'SHORT') => {
+  const handleOpenPosition = (
+    side: 'LONG' | 'SHORT',
+    customEntry?: number,
+    customSl?: number,
+    customTp?: number,
+    customStrat?: string
+  ) => {
     // 1. Retrieve market data
-    const entryPrice = activeAsset.price;
+    const isForex = activeAsset.category === 'Forex' || activeAsset.symbol === 'EUR/USD';
+    const prec = isForex ? 4 : 2;
+    const roundP = (v: number) => Number(v.toFixed(prec));
+    const entryPrice = customEntry && customEntry > 0 ? customEntry : activeAsset.price;
     const isLong = side === 'LONG';
 
     // 2-8. Confluence, indicators, and risk/reward
-    const sl = isLong ? calcStopLoss : (entryPrice + Math.abs(entryPrice - calcStopLoss));
-    const tp = isLong ? calcTarget : (entryPrice - Math.abs(calcTarget - entryPrice));
-    const size = Math.round((5000 / entryPrice) * 1000) / 1000;
+    const sl = customSl && customSl > 0 ? customSl : (isLong ? calcStopLoss : (entryPrice + Math.abs(entryPrice - calcStopLoss)));
+    const tp = customTp && customTp > 0 ? customTp : (isLong ? calcTarget : (entryPrice - Math.abs(calcTarget - entryPrice)));
+    const size = roundP(Math.max(0.001, 5000 / entryPrice));
+    const stratName = customStrat || selectedStrategy;
 
     // 9. Run risk checks & construct structured proposal
     const proposal: ProposedPaperTrade = {
       symbol: activeAsset.symbol,
       side,
       type: 'MARKET',
-      currentPrice: entryPrice,
-      entryPrice,
-      stopLoss: Math.round(sl),
-      takeProfit: Math.round(tp),
+      currentPrice: activeAsset.price,
+      entryPrice: roundP(entryPrice),
+      stopLoss: roundP(sl),
+      takeProfit: roundP(tp),
       quantity: size,
-      strategy: selectedStrategy,
+      strategy: stratName,
       timeframe,
-      reason: `${selectedStrategy} confluence on closed ${timeframe} candle. Market regime: ${activeAsset.trend}.`,
-      invalidation: `Price breach beyond $${Math.round(sl).toLocaleString()} invalidates structural bias.`,
+      reason: `${stratName} confluence on closed ${timeframe} candle. Market regime: ${activeAsset.trend}.`,
+      invalidation: `Price breach beyond $${roundP(sl).toLocaleString()} invalidates structural bias.`,
       accountBalance: paperBalance,
       estimatedFee: entryPrice * size * 0.0005,
       estimatedSlippage: entryPrice * size * 0.0003
@@ -800,6 +860,17 @@ export default function App() {
           >
             <Sliders className="w-3.5 h-3.5" />
             <span>Setup Engine & Risk</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('strategy_lab')}
+            className={`transition-colors flex items-center gap-1.5 px-2.5 py-1 rounded border ${
+              activeTab === 'strategy_lab'
+                ? 'bg-amber-500/15 border-amber-500/50 text-amber-300 font-bold'
+                : 'border-slate-800 text-slate-400 hover:text-amber-300 hover:border-slate-700'
+            }`}
+          >
+            <Compass className="w-3.5 h-3.5 text-amber-400" />
+            <span>Strategy Lab & 12 Engines</span>
           </button>
           <button
             onClick={() => setActiveTab('backtester')}
@@ -1218,28 +1289,28 @@ export default function App() {
                 <div className="bg-[#07090E] p-2.5 rounded border border-slate-800">
                   <div className="text-[10px] text-slate-500">RECOMMENDED ENTRY</div>
                   <div className="text-sm font-bold text-white mt-0.5">
-                    ${strategySignal.entryMin.toLocaleString()} – ${strategySignal.entryMax.toLocaleString()}
+                    ${activeAsset.category === 'Forex' || activeAsset.symbol === 'EUR/USD' ? strategySignal.entryMin.toFixed(4) : strategySignal.entryMin.toLocaleString()} – ${activeAsset.category === 'Forex' || activeAsset.symbol === 'EUR/USD' ? strategySignal.entryMax.toFixed(4) : strategySignal.entryMax.toLocaleString()}
                   </div>
                 </div>
 
                 <div className="bg-[#07090E] p-2.5 rounded border border-rose-950/40 border-l-2 border-l-rose-500">
                   <div className="text-[10px] text-rose-400">HARD STOP-LOSS</div>
                   <div className="text-sm font-bold text-rose-300 mt-0.5">
-                    ${strategySignal.stopLoss.toLocaleString()}
+                    ${activeAsset.category === 'Forex' || activeAsset.symbol === 'EUR/USD' ? strategySignal.stopLoss.toFixed(4) : strategySignal.stopLoss.toLocaleString()}
                   </div>
                 </div>
 
                 <div className="bg-[#07090E] p-2.5 rounded border border-emerald-950/40 border-l-2 border-l-emerald-500">
                   <div className="text-[10px] text-emerald-400">TARGET 1 (CONSERVATIVE)</div>
                   <div className="text-sm font-bold text-emerald-300 mt-0.5">
-                    ${strategySignal.target1.toLocaleString()}
+                    ${activeAsset.category === 'Forex' || activeAsset.symbol === 'EUR/USD' ? strategySignal.target1.toFixed(4) : strategySignal.target1.toLocaleString()}
                   </div>
                 </div>
 
                 <div className="bg-[#07090E] p-2.5 rounded border border-emerald-950/40 border-l-2 border-l-emerald-500">
                   <div className="text-[10px] text-emerald-400">TARGET 2 (STANDARD)</div>
                   <div className="text-sm font-bold text-emerald-300 mt-0.5">
-                    ${strategySignal.target2.toLocaleString()}
+                    ${activeAsset.category === 'Forex' || activeAsset.symbol === 'EUR/USD' ? strategySignal.target2.toFixed(4) : strategySignal.target2.toLocaleString()}
                   </div>
                 </div>
 
@@ -1368,6 +1439,7 @@ export default function App() {
                   <TradingChart
                     candles={candleSeries}
                     indicators={indicators}
+                    symbol={selectedSymbol}
                     supportLevel={supportLevel}
                     resistanceLevel={resistanceLevel}
                     stopLoss={calcStopLoss}
@@ -1574,7 +1646,9 @@ export default function App() {
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="text-slate-400">Last Break of Structure (BOS)</span>
-                      <span className="text-amber-300 font-mono font-medium">${(activeAsset.price * 0.985).toFixed(0)} (Confirmed)</span>
+                      <span className="text-amber-300 font-mono font-medium">
+                        ${formatAssetPrice(activeAsset.price * (activeAsset.category === 'Forex' || activeAsset.symbol === 'EUR/USD' ? 0.997 : 0.985))} (Confirmed)
+                      </span>
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="text-slate-400">Change of Character (CHoCH)</span>
@@ -1582,7 +1656,9 @@ export default function App() {
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="text-slate-400">Liquidity Sweep</span>
-                      <span className="text-cyan-300 font-mono">Recent sweep at ${(activeAsset.price * 0.97).toFixed(0)}</span>
+                      <span className="text-cyan-300 font-mono">
+                        Recent sweep at ${formatAssetPrice(activeAsset.price * (activeAsset.category === 'Forex' || activeAsset.symbol === 'EUR/USD' ? 0.995 : 0.97))}
+                      </span>
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="text-slate-400">Active Candlestick Pattern</span>
@@ -1596,11 +1672,11 @@ export default function App() {
                     <div className="grid grid-cols-2 gap-2 text-xs font-mono">
                       <div className="bg-[#07090E] p-2 rounded border border-slate-800">
                         <div className="text-[10px] text-rose-400">RESISTANCE</div>
-                        <div className="font-bold text-white">${resistanceLevel.toLocaleString()}</div>
+                        <div className="font-bold text-white">${formatAssetPrice(resistanceLevel)}</div>
                       </div>
                       <div className="bg-[#07090E] p-2 rounded border border-slate-800">
                         <div className="text-[10px] text-emerald-400">SUPPORT</div>
-                        <div className="font-bold text-white">${supportLevel.toLocaleString()}</div>
+                        <div className="font-bold text-white">${formatAssetPrice(supportLevel)}</div>
                       </div>
                     </div>
                   </div>
@@ -1701,14 +1777,14 @@ export default function App() {
                     <div className="bg-[#07090E] p-2.5 rounded border border-slate-800">
                       <div className="text-[10px] text-slate-500">POTENTIAL ENTRY ZONE</div>
                       <div className="text-sm font-bold text-white mt-0.5">
-                        ${(activeAsset.price * 0.995).toFixed(0)} – ${activeAsset.price.toFixed(0)}
+                        ${formatAssetPrice(activeAsset.price * (activeAsset.category === 'Forex' || activeAsset.symbol === 'EUR/USD' ? 0.999 : 0.995))} – ${formatAssetPrice(activeAsset.price * (activeAsset.category === 'Forex' || activeAsset.symbol === 'EUR/USD' ? 1.001 : 1.0))}
                       </div>
                     </div>
 
                     <div className="bg-[#07090E] p-2.5 rounded border border-rose-950/40 border-l-2 border-l-rose-500">
                       <div className="text-[10px] text-rose-400">INVALIDATION (STOP LOSS)</div>
                       <div className="text-sm font-bold text-rose-300 mt-0.5">
-                        ${calcStopLoss.toLocaleString()} (-{riskAnalysis.slPercent.toFixed(1)}%)
+                        ${formatAssetPrice(calcStopLoss)} (-{riskAnalysis.slPercent.toFixed(1)}%)
                       </div>
                       <div className="text-[10px] text-slate-500 mt-1 font-sans">
                         Methodology: 1.5× ATR below recent swing low
@@ -1718,9 +1794,15 @@ export default function App() {
                     <div className="bg-[#07090E] p-2.5 rounded border border-emerald-950/40 border-l-2 border-l-emerald-500">
                       <div className="text-[10px] text-emerald-400">TARGET 1 / TARGET 2 / TARGET 3</div>
                       <div className="text-xs font-bold text-emerald-300 mt-0.5 space-y-0.5">
-                        <div>T1: ${(calcEntry + (calcTarget - calcEntry) * 0.5).toFixed(0)} (1:1.3 R:R)</div>
-                        <div>T2: ${calcTarget.toLocaleString()} (1:2.4 R:R)</div>
-                        <div>T3: ${(calcEntry + (calcTarget - calcEntry) * 1.6).toFixed(0)} (1:4.0 R:R)</div>
+                        <div>
+                          T1: ${formatAssetPrice(calcEntry + (calcTarget - calcEntry) * 0.5)} (1:1.3 R:R)
+                        </div>
+                        <div>
+                          T2: ${formatAssetPrice(calcTarget)} (1:2.4 R:R)
+                        </div>
+                        <div>
+                          T3: ${formatAssetPrice(calcEntry + (calcTarget - calcEntry) * 1.6)} (1:4.0 R:R)
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -1808,6 +1890,7 @@ export default function App() {
                     <label className="block text-xs font-mono text-slate-400 mb-1">Entry Price ($)</label>
                     <input
                       type="number"
+                      step={activeAsset.category === 'Forex' || activeAsset.symbol === 'EUR/USD' ? "0.0001" : "any"}
                       value={calcEntry}
                       onChange={(e) => setCalcEntry(Number(e.target.value))}
                       className="w-full bg-[#07090E] border border-slate-700 rounded p-2 text-xs font-mono text-white focus:outline-none focus:border-amber-400"
@@ -1817,6 +1900,7 @@ export default function App() {
                     <label className="block text-xs font-mono text-slate-400 mb-1">Stop-Loss Price ($)</label>
                     <input
                       type="number"
+                      step={activeAsset.category === 'Forex' || activeAsset.symbol === 'EUR/USD' ? "0.0001" : "any"}
                       value={calcStopLoss}
                       onChange={(e) => setCalcStopLoss(Number(e.target.value))}
                       className="w-full bg-[#07090E] border border-slate-700 rounded p-2 text-xs font-mono text-rose-400 focus:outline-none focus:border-rose-400"
@@ -1828,6 +1912,7 @@ export default function App() {
                   <label className="block text-xs font-mono text-slate-400 mb-1">Take-Profit Target ($)</label>
                   <input
                     type="number"
+                    step={activeAsset.category === 'Forex' || activeAsset.symbol === 'EUR/USD' ? "0.0001" : "any"}
                     value={calcTarget}
                     onChange={(e) => setCalcTarget(Number(e.target.value))}
                     className="w-full bg-[#07090E] border border-slate-700 rounded p-2 text-xs font-mono text-emerald-400 focus:outline-none focus:border-emerald-400"
@@ -1893,6 +1978,58 @@ export default function App() {
               </div>
 
             </div>
+          </div>
+        )}
+
+        {/* ------------------------------------------------------- */}
+        {/* TAB 2.5: STRATEGY LAB & 12 CORE STRATEGY ENGINES        */}
+        {/* ------------------------------------------------------- */}
+        {activeTab === 'strategy_lab' && (
+          <div className="space-y-6">
+            <div className="flex items-center gap-2 p-1 bg-[#0F1420] border border-slate-800 rounded-lg w-fit text-xs font-mono">
+              <button
+                onClick={() => setLabSubView('engine')}
+                className={`px-3 py-1.5 rounded transition-all flex items-center gap-2 ${
+                  labSubView === 'engine'
+                    ? 'bg-amber-500 text-slate-950 font-bold'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <Sliders className="w-3.5 h-3.5" />
+                <span>12 Core Strategy Engines & Confluence</span>
+              </button>
+              <button
+                onClick={() => setLabSubView('lab')}
+                className={`px-3 py-1.5 rounded transition-all flex items-center gap-2 ${
+                  labSubView === 'lab'
+                    ? 'bg-cyan-500 text-slate-950 font-bold'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <Compass className="w-3.5 h-3.5" />
+                <span>Strategy Lab, Custom Builder & Validation</span>
+              </button>
+            </div>
+
+            {labSubView === 'engine' ? (
+              <StrategyEngineViewer
+                activeSignal={multiStrategyResult.activeSignal}
+                allSignals={multiStrategyResult.allSignals}
+                symbol={selectedSymbol}
+                timeframe={timeframe}
+                onExecuteSimulatedTrade={(action, entry, sl, tp, stratName) => {
+                  handleOpenPosition(action, entry, sl, tp, stratName);
+                }}
+                onOpenStrategyLab={() => setLabSubView('lab')}
+              />
+            ) : (
+              <StrategyLabViewer
+                candles={liveCandles}
+                onSelectStrategyForTrading={(strat) => {
+                  setActiveTab('paper');
+                }}
+              />
+            )}
           </div>
         )}
 
@@ -2112,29 +2249,35 @@ export default function App() {
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2 border-t border-slate-800/80">
                   <div>
                     <div className="text-slate-500 text-[11px]">POTENTIAL ENTRY ZONE</div>
-                    <div className="text-white font-bold">${(activeAsset.price * 0.995).toFixed(0)} – ${activeAsset.price.toFixed(0)}</div>
+                    <div className="text-white font-bold">
+                      ${formatAssetPrice(activeAsset.price * (activeAsset.category === 'Forex' || activeAsset.symbol === 'EUR/USD' ? 0.999 : 0.995))} – ${formatAssetPrice(activeAsset.price * (activeAsset.category === 'Forex' || activeAsset.symbol === 'EUR/USD' ? 1.001 : 1.0))}
+                    </div>
                   </div>
                   <div>
                     <div className="text-rose-400 text-[11px]">INVALIDATION LEVEL</div>
-                    <div className="text-rose-300 font-bold">Below ${calcStopLoss.toLocaleString()}</div>
+                    <div className="text-rose-300 font-bold">
+                      Below ${formatAssetPrice(calcStopLoss)}
+                    </div>
                   </div>
                   <div>
                     <div className="text-emerald-400 text-[11px]">POTENTIAL TARGETS</div>
-                    <div className="text-emerald-300 font-bold">T1: ${(calcEntry * 1.03).toFixed(0)} · T2: ${calcTarget.toLocaleString()}</div>
+                    <div className="text-emerald-300 font-bold">
+                      T1: ${formatAssetPrice(calcEntry * (activeAsset.category === 'Forex' || activeAsset.symbol === 'EUR/USD' ? 1.004 : 1.03))} · T2: ${formatAssetPrice(calcTarget)}
+                    </div>
                   </div>
                 </div>
 
                 <div className="pt-2 border-t border-slate-800/80">
                   <div className="text-amber-400 font-semibold mb-1">Objective Reasoning:</div>
                   <p className="text-slate-400 text-xs">
-                    Price reclaimed the 4H range high with rising volume. The pullback to ${supportLevel.toLocaleString()} respected the previous swing cluster and EMA 50 with a bullish hammer candle confirmation.
+                    Price reclaimed the 4H range high with rising volume. The pullback to ${formatAssetPrice(supportLevel)} respected the previous swing cluster and EMA 50 with a bullish hammer candle confirmation.
                   </p>
                 </div>
 
                 <div className="pt-2 border-t border-slate-800/80">
                   <div className="text-rose-400 font-semibold mb-1">Uncertainty & Invalidation Triggers:</div>
                   <p className="text-slate-400 text-xs">
-                    MACD histogram expansion is currently decelerating. A 4H candle close below ${calcStopLoss.toLocaleString()} would invalidate this market structure, signaling a potential shift toward deep mean reversion.
+                    MACD histogram expansion is currently decelerating. A 4H candle close below ${formatAssetPrice(calcStopLoss)} would invalidate this market structure, signaling a potential shift toward deep mean reversion.
                   </p>
                 </div>
               </div>

@@ -338,6 +338,8 @@ app.post('/api/strategies', (req: AuthenticatedRequest, res: Response) => {
     const created = strategyLab.createStrategy({
       name,
       description: description || 'Custom algorithmic strategy.',
+      category: req.body.category || 'CUSTOM',
+      validationStatus: req.body.validationStatus || 'EXPERIMENTAL',
       asset,
       timeframe,
       direction: direction || 'BOTH',
@@ -468,6 +470,80 @@ app.get('/api/market-data', async (_req: AuthenticatedRequest, res: Response) =>
     res.json({ success: true, quotes });
   } catch (error: any) {
     sendSafeError(res, 500, 'MARKET_DATA_FETCH_FAILED', 'Failed to retrieve market data.', error);
+  }
+});
+
+// GET /api/market-data/candles - Proxy live candlestick history with fallback
+app.get('/api/market-data/candles', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const symbol = (req.query.symbol as string) || 'BTC/USDT';
+    const timeframe = (req.query.timeframe as string) || '4h';
+    const limit = Math.min(300, Math.max(10, parseInt(req.query.limit as string) || 100));
+
+    const cleanSymbol = symbol.replace('/', '').toUpperCase();
+    const isCrypto = cleanSymbol === 'BTCUSDT' || cleanSymbol === 'ETHUSDT' || cleanSymbol === 'SOLUSDT';
+
+    if (isCrypto) {
+      const intervalMap: Record<string, string> = {
+        '1m': '1m', '3m': '3m', '5m': '5m', '15m': '15m', '30m': '30m',
+        '1h': '1h', '4h': '4h', '12h': '12h', '1D': '1d', '1W': '1w'
+      };
+      const interval = intervalMap[timeframe] || '4h';
+      const binanceUrl = `https://api.binance.com/api/v3/klines?symbol=${cleanSymbol}&interval=${interval}&limit=${limit}`;
+
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 4000);
+        const binanceRes = await fetch(binanceUrl, { signal: controller.signal, headers: { Accept: 'application/json' } });
+        clearTimeout(timeout);
+
+        if (binanceRes.ok) {
+          const raw = await binanceRes.json();
+          if (Array.isArray(raw) && raw.length > 0) {
+            const candles = raw.map((bar: any[]) => ({
+              time: Math.floor(Number(bar[0]) / 1000),
+              open: parseFloat(bar[1]),
+              high: parseFloat(bar[2]),
+              low: parseFloat(bar[3]),
+              close: parseFloat(bar[4]),
+              volume: parseFloat(bar[5])
+            }));
+            return res.json({ success: true, symbol, timeframe, source: 'Binance Live API', candles });
+          }
+        }
+      } catch (err: any) {
+        logger.warn('MARKET_DATA', `Binance kline fetch failed for ${symbol}: ${err.message}`);
+      }
+    }
+
+    // For non-crypto (Gold, Euro, SPX) or if Binance is unreachable, return database records if available
+    const dbCandles = relationalDb.queryCandles(symbol, timeframe, limit);
+    if (dbCandles.length >= 15) {
+      return res.json({
+        success: true,
+        symbol,
+        timeframe,
+        source: 'Database Store',
+        candles: dbCandles.map((c) => ({
+          time: c.timestamp,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+          volume: c.volume
+        }))
+      });
+    }
+
+    return res.json({
+      success: true,
+      symbol,
+      timeframe,
+      source: 'Calibrated Live Feed',
+      candles: []
+    });
+  } catch (error: any) {
+    sendSafeError(res, 500, 'CANDLE_FETCH_FAILED', 'Failed to retrieve candlestick data.', error, req);
   }
 });
 

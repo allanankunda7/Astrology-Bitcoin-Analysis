@@ -31,6 +31,7 @@ import { TradingChart, CandleData } from './TradingChart';
 import { UTCTimestamp } from 'lightweight-charts';
 import {
   subscribeToAllMarkets,
+  fetchRealCandles,
   generateRealisticCandles,
   updateCandlesWithLiveTick,
   LiveTicker,
@@ -374,6 +375,27 @@ export const AllMarketsAnalysis: React.FC<AllMarketsAnalysisProps> = ({ onSelect
   const [streamSpeed, setStreamSpeed] = useState<number>(600); // ms
   const [pingLatency, setPingLatency] = useState<number>(24);
 
+  // Asynchronously fetch real live candles for all 6 markets
+  useEffect(() => {
+    let isCancelled = false;
+    ALL_MARKET_ANALYSES.forEach((m) => {
+      fetchRealCandles(m.symbol, '4h', 80)
+        .then((realData) => {
+          if (!isCancelled && realData && realData.length > 0) {
+            setCandlesMap((prev) => ({
+              ...prev,
+              [m.symbol]: realData,
+            }));
+          }
+        })
+        .catch(() => {});
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
+
   const activeMarket = useMemo(() => {
     const base = ALL_MARKET_ANALYSES.find(m => m.symbol === selectedSymbol) || ALL_MARKET_ANALYSES[0];
     const live = liveTickers[selectedSymbol];
@@ -596,11 +618,11 @@ export const AllMarketsAnalysis: React.FC<AllMarketsAnalysisProps> = ({ onSelect
                       <div className="text-[11px] text-slate-400 mt-0.5">{market.name}</div>
                       {/* Real-time Bid / Ask / Spread */}
                       <div className="flex items-center gap-1.5 text-[10px] text-slate-400 font-mono mt-1">
-                        <span>B: <strong className="text-slate-200">{live?.bid !== undefined ? live.bid : (currentPrice * 0.9998).toFixed(2)}</strong></span>
+                        <span>B: <strong className="text-slate-200">{live?.bid !== undefined ? (market.symbol === 'EUR/USD' ? Number(live.bid).toFixed(4) : live.bid) : (currentPrice * 0.9998).toFixed(market.symbol === 'EUR/USD' ? 4 : 2)}</strong></span>
                         <span>·</span>
-                        <span>A: <strong className="text-slate-200">{live?.ask !== undefined ? live.ask : (currentPrice * 1.0002).toFixed(2)}</strong></span>
+                        <span>A: <strong className="text-slate-200">{live?.ask !== undefined ? (market.symbol === 'EUR/USD' ? Number(live.ask).toFixed(4) : live.ask) : (currentPrice * 1.0002).toFixed(market.symbol === 'EUR/USD' ? 4 : 2)}</strong></span>
                         <span>·</span>
-                        <span className="text-amber-400/90 font-semibold">Spr: {live?.spread ?? 0.35}</span>
+                        <span className="text-amber-400/90 font-semibold">Spr: {market.symbol === 'EUR/USD' ? `${((live?.spread ?? 0.00012) * 10000).toFixed(1)} pips` : `${live?.spread ?? 0.35}`}</span>
                       </div>
                     </div>
 
@@ -624,6 +646,7 @@ export const AllMarketsAnalysis: React.FC<AllMarketsAnalysisProps> = ({ onSelect
                   <div className="p-2 bg-[#07090E] relative">
                     <TradingChart
                       candles={candles}
+                      symbol={market.symbol}
                       indicators={{
                         showEma21: true,
                         showEma50: true,
@@ -791,21 +814,21 @@ export const AllMarketsAnalysis: React.FC<AllMarketsAnalysisProps> = ({ onSelect
               <div className="bg-[#07090E] p-4 rounded border border-slate-800 space-y-1">
                 <div className="text-[10px] text-slate-500">RECOMMENDED ENTRY BAND</div>
                 <div className="text-white font-bold text-sm">{activeMarket.entryZone}</div>
-                <div className="text-[11px] text-slate-400">Current Quote: ${activeMarket.currentPrice.toLocaleString()}</div>
+                <div className="text-[11px] text-slate-400">Current Quote: ${activeMarket.symbol === 'EUR/USD' ? activeMarket.currentPrice.toFixed(4) : activeMarket.currentPrice.toLocaleString()}</div>
               </div>
 
               <div className="bg-[#07090E] p-4 rounded border border-rose-500/40 space-y-1">
                 <div className="text-[10px] text-rose-400">STRUCTURAL INVALIDATION (STOP LOSS)</div>
-                <div className="text-rose-400 font-bold text-sm">${activeMarket.stopLoss.toLocaleString()}</div>
+                <div className="text-rose-400 font-bold text-sm">${activeMarket.symbol === 'EUR/USD' ? activeMarket.stopLoss.toFixed(4) : activeMarket.stopLoss.toLocaleString()}</div>
                 <div className="text-[11px] text-slate-400">Risk Distance: {activeMarket.stopDistancePct.toFixed(2)}% with 0.5×ATR cushion</div>
               </div>
 
               <div className="bg-[#07090E] p-4 rounded border border-emerald-500/40 space-y-1">
                 <div className="text-[10px] text-emerald-400">MULTI-STAGE TARGETS</div>
                 <div className="text-emerald-400 font-bold text-sm">
-                  TP1: ${activeMarket.tp1.toLocaleString()} · TP2: ${activeMarket.tp2.toLocaleString()}
+                  TP1: ${activeMarket.symbol === 'EUR/USD' ? activeMarket.tp1.toFixed(4) : activeMarket.tp1.toLocaleString()} · TP2: ${activeMarket.symbol === 'EUR/USD' ? activeMarket.tp2.toFixed(4) : activeMarket.tp2.toLocaleString()}
                 </div>
-                <div className="text-[11px] text-slate-400">TP3 Runner: ${activeMarket.tp3.toLocaleString()}</div>
+                <div className="text-[11px] text-slate-400">TP3 Runner: ${activeMarket.symbol === 'EUR/USD' ? activeMarket.tp3.toFixed(4) : activeMarket.tp3.toLocaleString()}</div>
               </div>
             </div>
 

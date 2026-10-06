@@ -1,0 +1,150 @@
+{
+  "version": 1,
+  "exportedAt": "2026-10-06T09:16:07.495Z",
+  "tables": {
+    "users": [
+      {
+        "id": "usr-quant-001",
+        "email": "allanankunda7@gmail.com",
+        "passwordHash": "8816b3f7f451f28e678bf83210411a7c:6eb13b354316fa7a4ec5345f7bc8dcf513511eb4c6cfa55b6ceca38102d55c7a5223058869c991b5cfae60e7da3eeb4a991f81f185efc71b69735d475cf2f42a",
+        "role": "RESEARCHER",
+        "createdAt": "2026-10-05T10:18:22.129Z"
+      },
+      {
+        "id": "usr_1791195526199_b63ae9",
+        "email": "researcher_1791195526180@quantlab.internal",
+        "passwordHash": "a942d45c69dc76d6ff0a71506d1f36db:add9058315d3c8e13c876976b06c2b4c16f5fcafc9fdd91b5dcccfd9692dcf68a011d92acc625ff67d033d3b9632f7d3cff497075d23e548f8a5ab3a3d9e5176",
+        "role": "RESEARCHER",
+        "createdAt": "2026-10-05T10:18:46.199Z"
+      },
+      {
+        "id": "usr_1791195580395_465f77",
+        "email": "researcher_1791195580375@quantlab.internal",
+        "passwordHash": "aa54fb0bc4a8a24d0a96bd7e37e640ea:10526bb178e98839abfbaea5d457165a875d0676c4ddd26dbb79e61e158f02c7d072dcbc4a7b9e60328820bf82569c38000cd438ba059fed31218d84ef4c5d42",
+        "role": "RESEARCHER",
+        "createdAt": "2026-10-05T10:19:40.395Z"
+      },
+      {
+        "id": "usr_1791195597780_e26201",
+        "email": "test_live_verify@quant.io",
+        "passwordHash": "95ba5d41929e5c82b2c3f7bceec055b3:0183e943161051b24554a9333c60fd16a588fa2a7bf9deaf0da08b51c21cbd4fc004b3be993db5805459dda76e55630fb155f7ce40edcacdc447bb917c7e1bb0",
+        "role": "RESEARCHER",
+        "createdAt": "2026-10-05T10:19:57.781Z"
+      },
+      {
+        "id": "usr_1791198276103_ae9ecf",
+        "email": "researcher_1791198276085@quantlab.internal",
+        "passwordHash": "3f8547780edc3ec75a18e565ea4bdda3:45f27c91baa9d89dfd9a5f8157ab2f26dc9fafcffda95718ef0dcf1339bf15a553ef90726b4dd40084e633050e69d4842f51d6092853d47ffccbb1839a705250",
+        "role": "RESEARCHER",
+        "createdAt": "2026-10-05T11:04:36.103Z"
+      },
+      {
+        "id": "usr_1791198325979_d575a2",
+        "email": "researcher_1791198325961@quantlab.internal",
+        "passwordHash": "ae622fce6e65a456af60f24b838bd110:97041a4fa643cc62d961dae6ec129e8c95793511292616f3fce307fa83467e0ad72cf2b2b0b91731eb4b9ff352df612de4ffe606bb818142460999ee6cc5da7d",
+        "role": "RESEARCHER",
+        "createdAt": "2026-10-05T11:05:25.979Z"
+      },
+      {
+        "id": "usr_1791200889938_97732a",
+        "email": "researcher_1791200889919@quantlab.internal",
+        "passwordHash": "375174bf5ae122e6d09abb6c1404735d:38252af0efbd67ad2a92626435bdea0542975ac6ec36efd88fdfbc1b1839abee7caefb5feb512c2d554bc50d1576b19692660bda1f324fc0b69de55b0e8ef5e0",
+        "role": "RESEARCHER",
+        "createdAt": "2026-10-05T11:48:09.938Z"
+      },
+      {
+        "id": "usr_1791274552833_af23ea",
+        "email": "researcher_1791274552815@quantlab.internal",
+        "passwordHash": "42d35092f562b76ca0a0641bb9a55f0d:f4e8517b170ebc5c5cbdda92426ad820de7e0a9b687306f09ae8f4da471f333fd0163ab4c4780533faa65e29a5776b735360661459fc7bfd63f0b5aa3d1726cf",
+        "role": "RESEARCHER",
+        "createdAt": "2026-10-06T08:15:52.833Z"
+      },
+      {
+        "id": "usr_1791277032766_f2dcbd",
+        "email": "researcher_1791277032743@quantlab.internal",
+        "passwordHash": "47a7a2e329d2df51a83808f7bb7917af:6dc2d230d51e0243e907869dea5b8eae30006542d0b1d83de6f882232606a1d654e9ab9516c7b1590110461b003dabffb6b9982bb7df470215f8ce6b5e368541",
+        "role": "RESEARCHER",
+        "createdAt": "2026-10-06T08:57:12.766Z"
+      },
+      {
+        "id": "usr_1791277845588_1a134d",
+        "email": "researcher_1791277845568@quantlab.internal",
+        "passwordHash": "489c55705dcf5b406463633ad8dbb904:663ae994a75007f12a6d6edcedcf195238b3560e5dd214ab1e3a56c2f4be348382d8ac0437f15ad99a1850b7148464d116e6c14d7d1425a4156ad3c96f72b204",
+        "role": "RESEARCHER",
+        "createdAt": "2026-10-06T09:10:45.588Z"
+      },
+      {
+        "id": "usr_1791278056713_f6f972",
+        "email": "researcher_1791278056692@quantlab.internal",
+        "passwordHash": "b3dc129705c85d4de60159bd604914bd:65682a8aa1949740e96f895ce5e8884c203460ad882e970e90d5fcd0a0b1c2b74089ee307e7f62e5a1fbd1f44495da80e755ff477ded0cfb7ea170663b3cd22d",
+        "role": "RESEARCHER",
+        "createdAt": "2026-10-06T09:14:16.713Z"
+      },
+      {
+        "id": "usr_1791278167452_edf15a",
+        "email": "researcher_1791278167432@quantlab.internal",
+        "passwordHash": "155d5794882ebf7254a7d12c99ae07a8:220c65e468acc4105ff8e7b2efc2816417cbcab7bb963e954a06a4080a51c703704afb3239d17be80973ba7ca998bdb4b181780145f5a1af7e267c8fd6f68d8b",
+        "role": "RESEARCHER",
+        "createdAt": "2026-10-06T09:16:07.452Z"
+      }
+    ],
+    "accounts": [
+      {
+        "id": "acc-paper-001",
+        "userId": "usr-quant-001",
+        "isPaper": true,
+        "startingBalance": 100000,
+        "balance": 100000,
+        "equity": 100000,
+        "usedMargin": 0,
+        "createdAt": "2026-10-05T10:18:22.130Z",
+        "updatedAt": "2026-10-05T10:18:22.130Z"
+      }
+    ],
+    "strategies": [
+      {
+        "id": "strat-btc-trend-pullback",
+        "userId": "usr-quant-001",
+        "name": "BTC Trend Pullback & SMC BOS",
+        "asset": "BTC/USDT",
+        "timeframe": "4h",
+        "activeVersion": "v1.1.0",
+        "createdAt": "2026-10-05T10:18:22.130Z",
+        "updatedAt": "2026-10-05T10:18:22.130Z"
+      }
+    ],
+    "strategyVersions": [
+      {
+        "id": "strat-btc-trend-pullback_v1.0.0",
+        "strategyId": "strat-btc-trend-pullback",
+        "version": "v1.0.0",
+        "parametersJson": "{\"emaFast\":21,\"emaSlow\":55,\"rsi\":14}",
+        "changeNotes": "Initial baseline model.",
+        "createdAt": "2026-10-05T10:18:22.130Z"
+      },
+      {
+        "id": "strat-btc-trend-pullback_v1.1.0",
+        "strategyId": "strat-btc-trend-pullback",
+        "version": "v1.1.0",
+        "parametersJson": "{\"emaFast\":20,\"emaSlow\":50,\"rsi\":14,\"smc\":true}",
+        "changeNotes": "Added SMC BOS validation.",
+        "createdAt": "2026-10-05T10:18:22.130Z"
+      }
+    ],
+    "orders": [],
+    "trades": [],
+    "candles": [],
+    "backtests": [],
+    "riskLimits": [],
+    "auditLogs": [
+      {
+        "userId": "usr_1791195597780_e26201",
+        "action": "USER_REGISTERED",
+        "details": "User registered with role RESEARCHER",
+        "ip": "127.0.0.1",
+        "id": "audit_1791195597782_vg8g",
+        "timestamp": "2026-10-05T10:19:57.782Z"
+      }
+    ]
+  }
+}

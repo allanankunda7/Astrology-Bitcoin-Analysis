@@ -53,56 +53,64 @@ export const MultiTimeframePanel: React.FC<MultiTimeframePanelProps> = ({ mtfDat
 
       {/* 3-Tier Grid */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {[htf, mtf, ltf].map((tier, idx) => (
-          <div
-            key={idx}
-            className="bg-[#07090E] border border-slate-800/80 rounded-lg p-3.5 flex flex-col justify-between space-y-3"
-          >
-            <div>
-              <div className="flex items-center justify-between text-xs font-mono mb-1">
-                <span className="font-bold text-white px-2 py-0.5 rounded bg-slate-800 text-[11px]">
-                  {tier.timeframe}
-                </span>
-                <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded ${
-                  tier.trend === 'BULLISH'
-                    ? 'text-emerald-400 bg-emerald-950/50'
-                    : tier.trend === 'BEARISH'
-                    ? 'text-rose-400 bg-rose-950/50'
-                    : 'text-slate-400 bg-slate-900'
-                }`}>
-                  {tier.trend}
-                </span>
-              </div>
+        {[htf, mtf, ltf].map((tier, idx) => {
+          const isForex = symbol === 'EUR/USD' || (tier.ema21 !== null && tier.ema21 < 10);
+          const fmtEma = (val: number | null) => {
+            if (!val) return '-';
+            return isForex ? val.toFixed(4) : val.toFixed(1);
+          };
 
-              <div className="text-[10px] font-mono text-slate-500 mt-1">
-                {tier.role}
-              </div>
-
-              <div className="mt-2.5 space-y-1 font-mono text-[11px]">
-                <div className="flex items-center justify-between text-slate-400">
-                  <span>Regime:</span>
-                  <strong className="text-slate-200">{tier.regime.regime}</strong>
-                </div>
-                <div className="flex items-center justify-between text-slate-400">
-                  <span>EMA 21 / 50:</span>
-                  <span className="text-slate-200">
-                    ${tier.ema21 ? tier.ema21.toFixed(1) : '-'} / ${tier.ema50 ? tier.ema50.toFixed(1) : '-'}
+          return (
+            <div
+              key={idx}
+              className="bg-[#07090E] border border-slate-800/80 rounded-lg p-3.5 flex flex-col justify-between space-y-3"
+            >
+              <div>
+                <div className="flex items-center justify-between text-xs font-mono mb-1">
+                  <span className="font-bold text-white px-2 py-0.5 rounded bg-slate-800 text-[11px]">
+                    {tier.timeframe}
+                  </span>
+                  <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded ${
+                    tier.trend === 'BULLISH'
+                      ? 'text-emerald-400 bg-emerald-950/50'
+                      : tier.trend === 'BEARISH'
+                      ? 'text-rose-400 bg-rose-950/50'
+                      : 'text-slate-400 bg-slate-900'
+                  }`}>
+                    {tier.trend}
                   </span>
                 </div>
-                <div className="flex items-center justify-between text-slate-400">
-                  <span>RSI (14):</span>
-                  <span className={`font-bold ${tier.rsi && tier.rsi > 50 ? 'text-emerald-400' : 'text-slate-300'}`}>
-                    {tier.rsi ? tier.rsi.toFixed(1) : '-'}
-                  </span>
+
+                <div className="text-[10px] font-mono text-slate-500 mt-1">
+                  {tier.role}
+                </div>
+
+                <div className="mt-2.5 space-y-1 font-mono text-[11px]">
+                  <div className="flex items-center justify-between text-slate-400">
+                    <span>Regime:</span>
+                    <strong className="text-slate-200">{tier.regime.regime}</strong>
+                  </div>
+                  <div className="flex items-center justify-between text-slate-400">
+                    <span>EMA 21 / 50:</span>
+                    <span className="text-slate-200">
+                      ${fmtEma(tier.ema21)} / ${fmtEma(tier.ema50)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-slate-400">
+                    <span>RSI (14):</span>
+                    <span className={`font-bold ${tier.rsi && tier.rsi > 50 ? 'text-emerald-400' : 'text-slate-300'}`}>
+                      {tier.rsi ? tier.rsi.toFixed(1) : '-'}
+                    </span>
+                  </div>
                 </div>
               </div>
-            </div>
 
-            <div className="p-2 rounded bg-[#0B0E17] border border-slate-800/60 text-[10px] text-slate-400 leading-relaxed font-mono">
-              {tier.keyObservation}
+              <div className="p-2 rounded bg-[#0B0E17] border border-slate-800/60 text-[10px] text-slate-400 leading-relaxed font-mono">
+                {tier.keyObservation}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* Synthesis & Guidance Box */}
