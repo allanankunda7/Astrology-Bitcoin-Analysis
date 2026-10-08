@@ -528,6 +528,19 @@ export class RelationalDatabase {
     return Array.from(this.trades.values());
   }
 
+  // --- Backtest Storage ---
+  public insertBacktest(backtest: DBBacktestRecord): DBBacktestRecord {
+    this.backtests.set(backtest.id, backtest);
+    this.persistToDisk();
+    return backtest;
+  }
+
+  public queryBacktests(symbol?: string): DBBacktestRecord[] {
+    const all = Array.from(this.backtests.values());
+    if (!symbol) return all;
+    return all.filter((b) => b.symbol.toUpperCase() === symbol.toUpperCase());
+  }
+
   // --- Audit Logging ---
   public logAudit(entry: Omit<DBAuditLogRecord, 'id' | 'timestamp'>): void {
     const record: DBAuditLogRecord = {

@@ -69,6 +69,7 @@ export const PaperOrderConfirmationModal: React.FC<PaperOrderConfirmationModalPr
   isSubmitting = false
 }) => {
   const [userAcknowledged, setUserAcknowledged] = useState(true);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   if (!isOpen || !proposal) return null;
 
@@ -90,18 +91,24 @@ export const PaperOrderConfirmationModal: React.FC<PaperOrderConfirmationModalPr
   const estimatedSlippage = proposal.estimatedSlippage ?? (notionalValue * 0.0003); // 0.03%
 
   const handleConfirm = async () => {
-    await onConfirm({
-      symbol: proposal.symbol,
-      side: isLong ? 'BUY' : 'SELL',
-      type: proposal.type,
-      quantity: proposal.quantity,
-      price: proposal.type === 'LIMIT' ? proposal.entryPrice : undefined,
-      stopLoss: proposal.stopLoss,
-      takeProfit: proposal.takeProfit,
-      strategy: proposal.strategy,
-      timeframe: proposal.timeframe,
-      reason: proposal.reason
-    });
+    try {
+      setErrorMessage(null);
+      await onConfirm({
+        symbol: proposal.symbol,
+        side: isLong ? 'BUY' : 'SELL',
+        type: proposal.type,
+        quantity: proposal.quantity,
+        price: proposal.type === 'LIMIT' ? proposal.entryPrice : proposal.currentPrice || proposal.entryPrice,
+        currentPrice: proposal.currentPrice || proposal.entryPrice,
+        stopLoss: proposal.stopLoss,
+        takeProfit: proposal.takeProfit,
+        strategy: proposal.strategy,
+        timeframe: proposal.timeframe,
+        reason: proposal.reason
+      });
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'Failed to execute simulated paper order.');
+    }
   };
 
   return (
@@ -246,6 +253,17 @@ export const PaperOrderConfirmationModal: React.FC<PaperOrderConfirmationModalPr
               <span>
                 <strong>Warning:</strong> Risk per trade ({riskOfBalancePct.toFixed(2)}%) exceeds standard 2.0% institutional risk limits.
               </span>
+            </div>
+          )}
+
+          {/* Submission Error Banner */}
+          {errorMessage && (
+            <div className="p-2.5 rounded bg-rose-950/50 border border-rose-500/50 flex items-start gap-2.5 text-xs text-rose-200 font-mono animate-in fade-in">
+              <ShieldAlert className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
+              <div>
+                <span className="font-bold text-rose-300 block mb-0.5">Order Rejection / Error:</span>
+                <span>{errorMessage}</span>
+              </div>
             </div>
           )}
 

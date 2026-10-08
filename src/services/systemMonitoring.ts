@@ -54,11 +54,33 @@ export interface AuditRecord {
     | 'PAPER_ORDER_REJECTED'
     | 'RISK_LIMIT_TRIGGERED'
     | 'ACCOUNT_RESET'
-    | 'DAILY_LOSS_LIMIT_REACHED';
+    | 'DAILY_LOSS_LIMIT_REACHED'
+    | 'KILL_SWITCH_TOGGLED'
+    | 'FEATURE_FLAG_TOGGLED';
   actor: string;
   targetId: string;
   details: string;
   immutableHash: string; // Cryptographic-style sequence fingerprint
+}
+
+export interface FeatureFlags {
+  PAPER_TRADING: boolean;
+  ASTROLOGY_RESEARCH: boolean;
+  AI_ANALYST: boolean;
+  LIVE_DATA: boolean;
+  EXPERIMENTAL_STRATEGIES: boolean;
+  OPTIMIZATION_ENGINE: boolean;
+  MONTE_CARLO: boolean;
+  PORTFOLIO_RISK: boolean;
+}
+
+export interface KillSwitches {
+  pauseSignals: boolean;
+  pausePaperTrading: boolean;
+  pauseAlerts: boolean;
+  pauseDataIngestion: boolean;
+  disableStrategy: boolean;
+  disableAiAnalysis: boolean;
 }
 
 export class SystemMonitoringService {
@@ -249,6 +271,57 @@ export class SystemMonitoringService {
 
     this.log('RISK_LIMIT', action.includes('REJECTED') ? 'WARN' : 'INFO', `[AUDIT] ${action}: ${details}`);
     return record;
+  }
+
+  private featureFlags: FeatureFlags = {
+    PAPER_TRADING: true,
+    ASTROLOGY_RESEARCH: true,
+    AI_ANALYST: true,
+    LIVE_DATA: true,
+    EXPERIMENTAL_STRATEGIES: true,
+    OPTIMIZATION_ENGINE: true,
+    MONTE_CARLO: true,
+    PORTFOLIO_RISK: true
+  };
+
+  private killSwitches: KillSwitches = {
+    pauseSignals: false,
+    pausePaperTrading: false,
+    pauseAlerts: false,
+    pauseDataIngestion: false,
+    disableStrategy: false,
+    disableAiAnalysis: false
+  };
+
+  public getFeatureFlags(): FeatureFlags {
+    return { ...this.featureFlags };
+  }
+
+  public setFeatureFlag(flag: keyof FeatureFlags, enabled: boolean, actor = 'ADMIN_USER'): FeatureFlags {
+    this.featureFlags[flag] = enabled;
+    this.recordAudit(
+      'FEATURE_FLAG_TOGGLED',
+      flag,
+      `Feature flag ${flag} set to ${enabled ? 'ENABLED' : 'DISABLED'} by ${actor}`,
+      actor
+    );
+    return { ...this.featureFlags };
+  }
+
+  public getKillSwitches(): KillSwitches {
+    return { ...this.killSwitches };
+  }
+
+  public setKillSwitch(switchName: keyof KillSwitches, active: boolean, actor = 'ADMIN_USER'): KillSwitches {
+    this.killSwitches[switchName] = active;
+    this.recordAudit(
+      'KILL_SWITCH_TOGGLED',
+      switchName,
+      `Kill switch ${switchName} set to ${active ? 'ENGAGED / PAUSED' : 'RESUMED'} by ${actor}`,
+      actor
+    );
+    this.log('SYSTEM', active ? 'WARN' : 'INFO', `[KILL_SWITCH] ${switchName} = ${active}`);
+    return { ...this.killSwitches };
   }
 
   public getAuditTrail(): AuditRecord[] {

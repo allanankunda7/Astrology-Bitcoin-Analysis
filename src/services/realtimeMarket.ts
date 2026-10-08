@@ -12,6 +12,9 @@
 
 import { UTCTimestamp } from 'lightweight-charts';
 import { CandleData } from '../components/TradingChart';
+import { PaperTradingClient } from './paperTradingClient';
+
+const lastServerSyncTime: Record<string, number> = {};
 
 export interface LiveTicker {
   symbol: string;
@@ -25,7 +28,7 @@ export interface LiveTicker {
   ask: number;
   spread: number;
   lastUpdated: string;
-  source: 'Binance Live WS' | 'Institutional Feed' | 'Coinbase REST' | 'Calibrated Stream';
+  source: 'Binance Live WS' | 'Binance Live Gold Spot (PAXG)' | 'Institutional Feed' | 'Coinbase REST' | 'Calibrated Stream';
   connected: boolean;
   tickDirection: 'up' | 'down' | 'neutral';
 }
@@ -80,7 +83,7 @@ export const MARKET_BASELINES: Record<string, {
 }> = {
   'XAU/USD': {
     name: 'Gold Spot',
-    basePrice: 2685.40,
+    basePrice: 4136.90,
     precision: 2,
     spreadPips: 0.35,
     volatility: 0.0006,
@@ -129,15 +132,28 @@ export const MARKET_BASELINES: Record<string, {
 };
 
 /**
- * Checks if symbol is supported on Binance public crypto API
+ * Checks if symbol is supported on Binance public live feed (Crypto, Gold Spot, Forex)
  */
 export function isBinanceCrypto(symbol: string): boolean {
   const clean = symbol.replace('/', '').toUpperCase();
-  return clean === 'BTCUSDT' || clean === 'ETHUSDT' || clean === 'SOLUSDT';
+  return (
+    clean === 'BTCUSDT' ||
+    clean === 'ETHUSDT' ||
+    clean === 'SOLUSDT' ||
+    clean === 'XAUUSD' ||
+    clean === 'EURUSD'
+  );
 }
 
 export function getBinanceSymbol(symbol: string): string {
   const clean = symbol.replace('/', '').toUpperCase();
+  if (clean === 'XAUUSD') {
+    // 1 PAXG token = 1 Fine Troy Ounce of LBMA Physical Gold Bullion traded 24/7
+    return 'PAXGUSDT';
+  }
+  if (clean === 'EURUSD') {
+    return 'EURUSDT';
+  }
   if (isBinanceCrypto(symbol)) {
     return clean;
   }
@@ -155,15 +171,15 @@ Object.entries(MARKET_BASELINES).forEach(([sym, meta]) => {
     symbol: sym,
     name: meta.name,
     price: meta.basePrice,
-    change24h: sym === 'XAU/USD' ? 0.45 : sym === 'BTC/USDT' ? 3.42 : sym === 'ETH/USDT' ? 2.15 : sym === 'SOL/USDT' ? 5.80 : sym === 'EUR/USD' ? -0.18 : 0.62,
-    high24h: Math.round((meta.basePrice * (sym === 'EUR/USD' ? 1.0045 : 1.018)) * factor) / factor,
-    low24h: Math.round((meta.basePrice * (sym === 'EUR/USD' ? 0.9955 : 0.985)) * factor) / factor,
-    volume24h: sym === 'XAU/USD' ? '$118B' : sym === 'BTC/USDT' ? '$28.4B' : sym === 'ETH/USDT' ? '$12.1B' : sym === 'SOL/USDT' ? '$4.9B' : sym === 'EUR/USD' ? '$420B' : '$84.2B',
+    change24h: sym === 'XAU/USD' ? -0.57 : sym === 'BTC/USDT' ? 3.42 : sym === 'ETH/USDT' ? 2.15 : sym === 'SOL/USDT' ? 5.80 : sym === 'EUR/USD' ? -0.18 : 0.62,
+    high24h: Math.round((meta.basePrice * (sym === 'EUR/USD' ? 1.0045 : sym === 'XAU/USD' ? 1.012 : 1.018)) * factor) / factor,
+    low24h: Math.round((meta.basePrice * (sym === 'EUR/USD' ? 0.9955 : sym === 'XAU/USD' ? 0.988 : 0.985)) * factor) / factor,
+    volume24h: sym === 'XAU/USD' ? '$13.2M' : sym === 'BTC/USDT' ? '$28.4B' : sym === 'ETH/USDT' ? '$12.1B' : sym === 'SOL/USDT' ? '$4.9B' : sym === 'EUR/USD' ? '$420B' : '$84.2B',
     bid: Math.round((meta.basePrice - halfSpread) * factor) / factor,
     ask: Math.round((meta.basePrice + halfSpread) * factor) / factor,
     spread: meta.spreadPips,
     lastUpdated: 'Real-time',
-    source: isBinanceCrypto(sym) ? 'Binance Live WS' : 'Institutional Feed',
+    source: sym === 'XAU/USD' ? 'Binance Live Gold Spot (PAXG)' : isBinanceCrypto(sym) ? 'Binance Live WS' : 'Institutional Feed',
     connected: true,
     tickDirection: 'neutral',
   };
@@ -385,16 +401,23 @@ export function subscribeToLiveTicker(
       ask,
       spread: meta.spreadPips,
       lastUpdated: new Date().toISOString().replace('T', ' ').substring(11, 19) + ' UTC',
-      source: source || (isBinanceCrypto(symbol) ? 'Binance Live WS' : 'Institutional Feed'),
+      source: source || (symbol === 'XAU/USD' ? 'Binance Live Gold Spot (PAXG)' : isBinanceCrypto(symbol) ? 'Binance Live WS' : 'Institutional Feed'),
       connected: true,
       tickDirection: direction,
     };
 
     liveTickersCache[symbol] = ticker;
     onTick(ticker);
+
+    // Periodically sync live price to backend paper broker & risk engine (throttled every 3s)
+    const now = Date.now();
+    if (!lastServerSyncTime[symbol] || now - lastServerSyncTime[symbol] > 3000) {
+      lastServerSyncTime[symbol] = now;
+      PaperTradingClient.syncMarketPrice(symbol, roundedPrice).catch(() => {});
+    }
   }
 
-  // 1. Connect to Binance WebSocket if crypto
+  // 1. Connect to Binance WebSocket if crypto / gold / forex
   if (isBinanceCrypto(symbol)) {
     const binanceSymbol = getBinanceSymbol(symbol).toLowerCase();
     const wsUrl = `wss://stream.binance.com:9443/ws/${binanceSymbol}@ticker`;
@@ -420,7 +443,14 @@ export function subscribeToLiveTicker(
               const quoteVol = parseFloat(data.q);
               const volStr = quoteVol > 1e9 ? `$${(quoteVol / 1e9).toFixed(1)}B` : `$${(quoteVol / 1e6).toFixed(0)}M`;
 
-              emitTick(price, change24h, high24h, low24h, volStr, 'Binance Live WS');
+              emitTick(
+                price,
+                change24h,
+                high24h,
+                low24h,
+                volStr,
+                symbol === 'XAU/USD' ? 'Binance Live Gold Spot (PAXG)' : 'Binance Live WS'
+              );
             }
           } catch {
             // ignore parse err

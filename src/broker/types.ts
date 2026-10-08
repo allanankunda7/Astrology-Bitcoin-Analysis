@@ -107,9 +107,34 @@ export interface AccountSummary {
   winRate: number;           // Win rate percentage (0 - 100)
   profitFactor: number;      // Gross wins / Gross losses
   maxDrawdownPercent: number;
+  peakEquity?: number;
+  currentDrawdownPercent?: number;
   environment: 'PAPER_SIMULATION';
   isPaper: true;
   lastUpdated: string;
+}
+
+export interface ResetAccountOptions {
+  startingBalance?: number;
+  currency?: string;
+  preserveJournal?: boolean;     // Keep trade history for journal analysis
+  clearOpenPositions?: boolean;  // Default true
+  clearOpenOrders?: boolean;     // Default true
+}
+
+export interface AccountSettings {
+  startingBalance: number;
+  currentBalance: number;
+  availableBalance: number;
+  usedMargin: number;
+  unrealizedPnL: number;
+  realizedPnL: number;
+  totalFees: number;
+  equity: number;
+  peakEquity: number;
+  currentDrawdown: number;
+  maximumDrawdown: number;
+  currency: string;
 }
 
 export interface MarketDataQuote {
@@ -130,6 +155,7 @@ export interface PlaceOrderParams {
   type: OrderType;
   quantity: number;
   price?: number;
+  currentPrice?: number;
   stopPrice?: number;
   stopLoss?: number;
   takeProfit?: number;

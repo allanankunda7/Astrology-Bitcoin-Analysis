@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "exportedAt": "2026-10-06T09:16:07.495Z",
+  "exportedAt": "2026-10-08T08:59:32.504Z",
   "tables": {
     "users": [
       {
@@ -86,6 +86,62 @@
         "passwordHash": "155d5794882ebf7254a7d12c99ae07a8:220c65e468acc4105ff8e7b2efc2816417cbcab7bb963e954a06a4080a51c703704afb3239d17be80973ba7ca998bdb4b181780145f5a1af7e267c8fd6f68d8b",
         "role": "RESEARCHER",
         "createdAt": "2026-10-06T09:16:07.452Z"
+      },
+      {
+        "id": "usr_1791360299910_218d3c",
+        "email": "researcher_1791360299895@quantlab.internal",
+        "passwordHash": "d93ff955ecbaa2ecc5f9d4eaf776d131:ed3cd6e8bdd85617efdcebbeac9b98e25e1c91e55138ab253c76f2345cd01da81fe20dba143775c4501646da8e659dbe3c30607728540103a5fc4c1959464adb",
+        "role": "RESEARCHER",
+        "createdAt": "2026-10-07T08:04:59.910Z"
+      },
+      {
+        "id": "usr_1791360340565_820ee3",
+        "email": "researcher_1791360340548@quantlab.internal",
+        "passwordHash": "16d0dda2c34088ea5c83d765c197e4c5:4cf849db2cf91276f563e0234ac6dce35332f925b2fce78ce6b21044648eca3221eeca6193b190d4f4166aa9e107d574fb5f784670e4239d2c3406483ceb45b8",
+        "role": "RESEARCHER",
+        "createdAt": "2026-10-07T08:05:40.565Z"
+      },
+      {
+        "id": "usr_1791360472614_b8d967",
+        "email": "researcher_1791360472600@quantlab.internal",
+        "passwordHash": "5c8313d49e9c70d478fcbaea606daba6:0d88a4c082d0144596f771e0889494e436908f1cd61185ce80a7e9f39e8798893617344e7e1a4ec2eae2eb40e037586bfafd2d808859ec29397b8710cd6b8e5f",
+        "role": "RESEARCHER",
+        "createdAt": "2026-10-07T08:07:52.615Z"
+      },
+      {
+        "id": "usr_1791360595758_4ac0c9",
+        "email": "researcher_1791360595743@quantlab.internal",
+        "passwordHash": "9e8d20349bb9818070aeb32d14a81ef0:526d3a5553dbab6949208a6926a796cb90bbac53bce02d2776b6aa8f198b1e5ed938f09b5377b9603e10353c796ed9e9c5fcda7222479b5764b7bd432f207a4b",
+        "role": "RESEARCHER",
+        "createdAt": "2026-10-07T08:09:55.758Z"
+      },
+      {
+        "id": "usr_1791361658748_b6e7b7",
+        "email": "researcher_1791361658732@quantlab.internal",
+        "passwordHash": "2764ef09e413508997a4a6491ad1795c:2a391ce95a6896fa83d79940733b2efccf12b50127363db6395e7fbcafa701122a845ea3d4e1b3ccd881f2ae06c6b3ab0f3d2045b9f1df3c2d56d4fd84e701d7",
+        "role": "RESEARCHER",
+        "createdAt": "2026-10-07T08:27:38.748Z"
+      },
+      {
+        "id": "usr_1791363042207_c22566",
+        "email": "researcher_1791363042193@quantlab.internal",
+        "passwordHash": "c19f4e366c9f5509468c0eafa4668baf:3eb58801ca0c4fdcce4d1b478ecaf5f5f726a8ed16501ca9e37db47c8531bbc2b36363e756bce67641668eb8fdb44c312952ec99a4f0ae4c78732b0ed8b4960b",
+        "role": "RESEARCHER",
+        "createdAt": "2026-10-07T08:50:42.207Z"
+      },
+      {
+        "id": "usr_1791449937765_c5e94e",
+        "email": "researcher_1791449937750@quantlab.internal",
+        "passwordHash": "3bcb0c44520a521e1f985d08a2945a1f:550e09150f6520016441104cdfb4b0461bef22c692820490696cb98d0402bb616be58293c172f1b3a06d89277f5c77a50ceb506d2f024fc74052766b01fcaaa4",
+        "role": "RESEARCHER",
+        "createdAt": "2026-10-08T08:58:57.765Z"
+      },
+      {
+        "id": "usr_1791449972466_36098d",
+        "email": "researcher_1791449972451@quantlab.internal",
+        "passwordHash": "5d8e15d4f81bae89ea21d4c3b664e2d5:af50c77a86bb3b6b7bd274cc937724eec93870e8c6184d5c20fb4755c10a2ebb112b82b3dbb4b3210c9c643cdb843cf40372bd7bbbb2b17a100e4448502f6416",
+        "role": "RESEARCHER",
+        "createdAt": "2026-10-08T08:59:32.466Z"
       }
     ],
     "accounts": [
@@ -131,7 +187,83 @@
         "createdAt": "2026-10-05T10:18:22.130Z"
       }
     ],
-    "orders": [],
+    "orders": [
+      {
+        "id": "ord-paper-1791445859902-jtdy",
+        "accountId": "PAPER-ACC-QUANT-001",
+        "strategyId": "Trend Following",
+        "symbol": "XAU/USD",
+        "side": "SELL",
+        "type": "MARKET",
+        "status": "FILLED",
+        "quantity": 0.65,
+        "stopLoss": 4253.45,
+        "takeProfit": 3881.79,
+        "fee": 1.34,
+        "slippage": 0.81,
+        "createdAt": "2026-10-08T07:50:59.902Z"
+      },
+      {
+        "id": "ord-paper-1791449662896-k2vx",
+        "accountId": "PAPER-ACC-QUANT-001",
+        "strategyId": "Trend Following",
+        "symbol": "BTC/USDT",
+        "side": "BUY",
+        "type": "MARKET",
+        "status": "FILLED",
+        "quantity": 0.01,
+        "stopLoss": 80000,
+        "takeProfit": 105000,
+        "fee": 0.44,
+        "slippage": 0.27,
+        "createdAt": "2026-10-08T08:54:22.896Z"
+      },
+      {
+        "id": "ord-paper-1791449668160-wr2a",
+        "accountId": "PAPER-ACC-QUANT-001",
+        "strategyId": "Pullback Continuation",
+        "symbol": "XAU/USD",
+        "side": "BUY",
+        "type": "MARKET",
+        "status": "FILLED",
+        "quantity": 0.01,
+        "stopLoss": 4000,
+        "takeProfit": 4400,
+        "fee": 0.02,
+        "slippage": 0.01,
+        "createdAt": "2026-10-08T08:54:28.160Z"
+      },
+      {
+        "id": "ord-paper-1791449946999-v5ez",
+        "accountId": "PAPER-ACC-QUANT-001",
+        "strategyId": "Trend Following",
+        "symbol": "BTC/USDT",
+        "side": "BUY",
+        "type": "MARKET",
+        "status": "FILLED",
+        "quantity": 0.001,
+        "stopLoss": 85600,
+        "takeProfit": 94500,
+        "fee": 0.04,
+        "slippage": 0.03,
+        "createdAt": "2026-10-08T08:59:06.999Z"
+      },
+      {
+        "id": "ord-paper-1791449952295-b7i3",
+        "accountId": "PAPER-ACC-QUANT-001",
+        "strategyId": "Pullback Continuation",
+        "symbol": "XAU/USD",
+        "side": "BUY",
+        "type": "MARKET",
+        "status": "FILLED",
+        "quantity": 0.01,
+        "stopLoss": 4004.52,
+        "takeProfit": 4434.76,
+        "fee": 0.02,
+        "slippage": 0.01,
+        "createdAt": "2026-10-08T08:59:12.295Z"
+      }
+    ],
     "trades": [],
     "candles": [],
     "backtests": [],
@@ -144,6 +276,41 @@
         "ip": "127.0.0.1",
         "id": "audit_1791195597782_vg8g",
         "timestamp": "2026-10-05T10:19:57.782Z"
+      },
+      {
+        "action": "PAPER_ORDER_PLACED",
+        "details": "SELL 0.65 XAU/USD (MARKET) placed successfully",
+        "ip": "127.0.0.1",
+        "id": "audit_1791445859903_wv99",
+        "timestamp": "2026-10-08T07:50:59.903Z"
+      },
+      {
+        "action": "PAPER_ORDER_PLACED",
+        "details": "BUY 0.01 BTC/USDT (MARKET) placed successfully",
+        "ip": "127.0.0.1",
+        "id": "audit_1791449662896_emy7",
+        "timestamp": "2026-10-08T08:54:22.896Z"
+      },
+      {
+        "action": "PAPER_ORDER_PLACED",
+        "details": "BUY 0.01 XAU/USD (MARKET) placed successfully",
+        "ip": "127.0.0.1",
+        "id": "audit_1791449668160_6j3t",
+        "timestamp": "2026-10-08T08:54:28.160Z"
+      },
+      {
+        "action": "PAPER_ORDER_PLACED",
+        "details": "BUY 0.001 BTC/USDT (MARKET) placed successfully",
+        "ip": "127.0.0.1",
+        "id": "audit_1791449947000_z5qt",
+        "timestamp": "2026-10-08T08:59:07.000Z"
+      },
+      {
+        "action": "PAPER_ORDER_PLACED",
+        "details": "BUY 0.01 XAU/USD (MARKET) placed successfully",
+        "ip": "127.0.0.1",
+        "id": "audit_1791449952295_voub",
+        "timestamp": "2026-10-08T08:59:12.295Z"
       }
     ]
   }

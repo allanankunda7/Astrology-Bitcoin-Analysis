@@ -66,6 +66,8 @@ import { PaperTradingClient } from './services/paperTradingClient';
 import { PlaceOrderParams } from './broker/types';
 import { StrategyEngineViewer } from './components/StrategyEngineViewer';
 import { StrategyLabViewer } from './components/StrategyLabViewer';
+import { RiskManagementCalculator } from './components/RiskManagementCalculator';
+import { BacktestPerformanceDashboard } from './components/BacktestPerformanceDashboard';
 import { evaluateAllStrategies } from './services/strategies';
 
 // ==========================================
@@ -135,13 +137,13 @@ const SUPPORTED_MARKETS: MarketAsset[] = [
     symbol: 'XAU/USD',
     name: 'Gold Spot',
     category: 'Commodities',
-    price: 2685.40,
-    change24h: 0.45,
-    high24h: 2692.10,
-    low24h: 2674.30,
-    volume24h: '$118B',
+    price: 4136.90,
+    change24h: -0.57,
+    high24h: 4187.90,
+    low24h: 4135.90,
+    volume24h: '$13.2M',
     trend: 'Mild Uptrend',
-    volatility: '14.5% Ann.',
+    volatility: '16.5% Ann.',
     session: 'London Active'
   },
   {
@@ -371,6 +373,15 @@ export default function App() {
 
   // Real-time world news subscription
   useEffect(() => {
+    // Synchronize initial paper balance with broker state
+    PaperTradingClient.getAccount()
+      .then((acc) => {
+        if (acc && typeof acc.balance === 'number') {
+          setPaperBalance(acc.balance);
+        }
+      })
+      .catch(() => {});
+
     fetchLiveWorldNews().then((items) => {
       if (items && items.length > 0) {
         setWorldNews(items);
@@ -718,7 +729,7 @@ export default function App() {
 
   // 14-Step Trading Engine Flow -> Explicit User Confirmation -> PaperBroker
   const handleOpenPosition = (
-    side: 'LONG' | 'SHORT',
+    side: 'LONG' | 'SHORT' | 'BUY' | 'SELL',
     customEntry?: number,
     customSl?: number,
     customTp?: number,
@@ -729,18 +740,80 @@ export default function App() {
     const prec = isForex ? 4 : 2;
     const roundP = (v: number) => Number(v.toFixed(prec));
     const entryPrice = customEntry && customEntry > 0 ? customEntry : activeAsset.price;
-    const isLong = side === 'LONG';
+    const isLong = side === 'LONG' || side === 'BUY';
+    const normalizedSide: 'LONG' | 'SHORT' = isLong ? 'LONG' : 'SHORT';
 
     // 2-8. Confluence, indicators, and risk/reward
-    const sl = customSl && customSl > 0 ? customSl : (isLong ? calcStopLoss : (entryPrice + Math.abs(entryPrice - calcStopLoss)));
-    const tp = customTp && customTp > 0 ? customTp : (isLong ? calcTarget : (entryPrice - Math.abs(calcTarget - entryPrice)));
-    const size = roundP(Math.max(0.001, 5000 / entryPrice));
+    // Strictly guarantee proper SL and TP orientations relative to entryPrice:
+    let sl = customSl && customSl > 0 ? customSl : 0;
+    let tp = customTp && customTp > 0 ? customTp : 0;
+
+    if (isLong) {
+      // LONG: StopLoss MUST be strictly below entryPrice, TakeProfit MUST be strictly above
+      if (!sl || sl >= entryPrice) {
+        sl = calcStopLoss > 0 && calcStopLoss < entryPrice
+          ? calcStopLoss
+          : entryPrice * (isForex ? 0.9950 : 0.985);
+      }
+      if (!tp || tp <= entryPrice) {
+        tp = calcTarget > 0 && calcTarget > entryPrice
+          ? calcTarget
+          : entryPrice * (isForex ? 1.0120 : 1.035);
+      }
+    } else {
+      // SHORT: StopLoss MUST be strictly above entryPrice, TakeProfit MUST be strictly below
+      if (!sl || sl <= entryPrice) {
+        sl = calcStopLoss > 0 && calcStopLoss > entryPrice
+          ? calcStopLoss
+          : entryPrice * (isForex ? 1.0050 : 1.015);
+      }
+      if (!tp || tp >= entryPrice) {
+        tp = calcTarget > 0 && calcTarget < entryPrice
+          ? calcTarget
+          : entryPrice * (isForex ? 0.9880 : 0.965);
+      }
+    }
+
+    // Guarantee minimum 1.5R favorable Risk/Reward ratio to satisfy risk rules:
+    const slDist = Math.abs(entryPrice - sl);
+    if (slDist > 0) {
+      const currentReward = Math.abs(tp - entryPrice);
+      if (currentReward / slDist < 1.3) {
+        tp = isLong ? entryPrice + slDist * 1.5 : entryPrice - slDist * 1.5;
+        tp = roundP(tp);
+      }
+    }
+
+    // Dynamic balance-aware position sizing (1% risk per trade of account balance)
+    const availableEquity = Math.max(100, paperBalance || 10000);
+    const stopDistance = Math.abs(entryPrice - sl);
+    const riskDollar = availableEquity * 0.01; // 1% standard risk
+    let calculatedQty = stopDistance > 0 ? (riskDollar / stopDistance) : (availableEquity * 0.1 / entryPrice);
+
+    // Limit position notional to at most 60% of available capital
+    const maxNotional = availableEquity * 0.6;
+    if (calculatedQty * entryPrice > maxNotional) {
+      calculatedQty = maxNotional / entryPrice;
+    }
+
+    // Asset-specific minimum lot/unit sizes
+    let minQty = 0.001;
+    if (isForex) minQty = 100;
+    else if (activeAsset.symbol === 'XAU/USD') minQty = 0.01;
+    else if (activeAsset.symbol.includes('BTC')) minQty = 0.001;
+    else if (activeAsset.symbol.includes('ETH')) minQty = 0.01;
+    else if (activeAsset.symbol.includes('SOL')) minQty = 0.1;
+
+    // Separate quantity precision from price precision to ensure micro lots never truncate to 0
+    const qtyPrec = isForex ? 0 : activeAsset.symbol.includes('BTC') ? 4 : activeAsset.symbol.includes('ETH') ? 3 : 2;
+    const rawQty = Math.max(minQty, calculatedQty);
+    const size = Math.max(minQty, Number(rawQty.toFixed(qtyPrec)) || minQty);
     const stratName = customStrat || selectedStrategy;
 
     // 9. Run risk checks & construct structured proposal
     const proposal: ProposedPaperTrade = {
       symbol: activeAsset.symbol,
-      side,
+      side: normalizedSide,
       type: 'MARKET',
       currentPrice: activeAsset.price,
       entryPrice: roundP(entryPrice),
@@ -750,7 +823,9 @@ export default function App() {
       strategy: stratName,
       timeframe,
       reason: `${stratName} confluence on closed ${timeframe} candle. Market regime: ${activeAsset.trend}.`,
-      invalidation: `Price breach beyond $${roundP(sl).toLocaleString()} invalidates structural bias.`,
+      invalidation: isLong
+        ? `A 4H close below $${roundP(sl).toLocaleString()} invalidates the bullish market structure.`
+        : `A 4H close above $${roundP(sl).toLocaleString()} invalidates the bearish market structure.`,
       accountBalance: paperBalance,
       estimatedFee: entryPrice * size * 0.0005,
       estimatedSlippage: entryPrice * size * 0.0003
@@ -781,13 +856,21 @@ export default function App() {
       };
       setActivePositions((prev) => [newPos, ...prev]);
 
+      // Refresh paper account balance from server
+      const updatedAcc = await PaperTradingClient.getAccount().catch(() => null);
+      if (updatedAcc && typeof updatedAcc.balance === 'number') {
+        setPaperBalance(updatedAcc.balance);
+      }
+
       // 14. Update dashboard & display notification
-      setPaperOrderNotification(`Paper ${order.type} order executed on ${order.symbol} at $${newPos.entryPrice.toLocaleString()}`);
+      setPaperOrderNotification(`Paper ${order.side} (${order.type}) executed: ${order.quantity} ${order.symbol} at $${newPos.entryPrice.toLocaleString()}`);
       setTimeout(() => setPaperOrderNotification(null), 5000);
       setIsEngineOrderModalOpen(false);
       setEngineOrderProposal(null);
     } catch (err: any) {
-      alert(`PaperBroker Error: ${err.message}`);
+      setPaperOrderNotification(`Order Rejected: ${err.message}`);
+      setTimeout(() => setPaperOrderNotification(null), 8000);
+      throw err; // Propagate to modal so user sees the exact reason
     } finally {
       setIsEngineSubmitting(false);
     }
@@ -1264,7 +1347,13 @@ export default function App() {
 
                   {strategySignal.action !== 'WAIT' && (
                     <button
-                      onClick={() => handleOpenPosition(strategySignal.action as 'LONG' | 'SHORT')}
+                      onClick={() => handleOpenPosition(
+                        strategySignal.action === 'BUY' ? 'LONG' : 'SHORT',
+                        activeAsset.price,
+                        strategySignal.stopLoss,
+                        strategySignal.target2,
+                        strategySignal.strategyName
+                      )}
                       className={`px-4 py-2 rounded text-xs font-bold font-mono transition-all flex items-center gap-2 shadow-md ${
                         strategySignal.action === 'BUY'
                           ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-emerald-500/20'
@@ -1847,138 +1936,22 @@ export default function App() {
         {/* TAB 2: SETUP ENGINE & RISK MANAGEMENT CALCULATOR        */}
         {/* ------------------------------------------------------- */}
         {activeTab === 'setups' && (
-          <div className="space-y-6">
-            <div className="bg-[#0F1420] border border-slate-800 rounded-lg p-5">
-              <h2 className="text-base font-bold text-white tracking-tight mb-1">
-                Quantitative Risk Management & Capital Allocation Calculator
-              </h2>
-              <p className="text-xs text-slate-400">
-                Determine exact position sizing based on strict capital preservation limits and ATR stop distances.
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              
-              {/* Inputs Form */}
-              <div className="bg-[#0F1420] border border-slate-800 rounded-lg p-5 space-y-4">
-                <h3 className="text-sm font-semibold text-white mb-2">1. Parameters Input</h3>
-
-                <div>
-                  <label className="block text-xs font-mono text-slate-400 mb-1">Account Balance ($ USDT)</label>
-                  <input
-                    type="number"
-                    value={accountBalance}
-                    onChange={(e) => setAccountBalance(Number(e.target.value))}
-                    className="w-full bg-[#07090E] border border-slate-700 rounded p-2 text-xs font-mono text-white focus:outline-none focus:border-amber-400"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-mono text-slate-400 mb-1">Max Risk per Trade (% of Capital)</label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    value={riskPercent}
-                    onChange={(e) => setRiskPercent(Number(e.target.value))}
-                    className="w-full bg-[#07090E] border border-slate-700 rounded p-2 text-xs font-mono text-amber-300 focus:outline-none focus:border-amber-400"
-                  />
-                  <span className="text-[10px] text-slate-500 mt-1 block">Recommended: 0.5% – 1.5%</span>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-mono text-slate-400 mb-1">Entry Price ($)</label>
-                    <input
-                      type="number"
-                      step={activeAsset.category === 'Forex' || activeAsset.symbol === 'EUR/USD' ? "0.0001" : "any"}
-                      value={calcEntry}
-                      onChange={(e) => setCalcEntry(Number(e.target.value))}
-                      className="w-full bg-[#07090E] border border-slate-700 rounded p-2 text-xs font-mono text-white focus:outline-none focus:border-amber-400"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-mono text-slate-400 mb-1">Stop-Loss Price ($)</label>
-                    <input
-                      type="number"
-                      step={activeAsset.category === 'Forex' || activeAsset.symbol === 'EUR/USD' ? "0.0001" : "any"}
-                      value={calcStopLoss}
-                      onChange={(e) => setCalcStopLoss(Number(e.target.value))}
-                      className="w-full bg-[#07090E] border border-slate-700 rounded p-2 text-xs font-mono text-rose-400 focus:outline-none focus:border-rose-400"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-mono text-slate-400 mb-1">Take-Profit Target ($)</label>
-                  <input
-                    type="number"
-                    step={activeAsset.category === 'Forex' || activeAsset.symbol === 'EUR/USD' ? "0.0001" : "any"}
-                    value={calcTarget}
-                    onChange={(e) => setCalcTarget(Number(e.target.value))}
-                    className="w-full bg-[#07090E] border border-slate-700 rounded p-2 text-xs font-mono text-emerald-400 focus:outline-none focus:border-emerald-400"
-                  />
-                </div>
-              </div>
-
-              {/* Sizing & Risk Diagnostics */}
-              <div className="bg-[#0F1420] border border-slate-800 rounded-lg p-5 flex flex-col justify-between">
-                <div>
-                  <h3 className="text-sm font-semibold text-white mb-3">2. Position Size & Risk Diagnostics</h3>
-
-                  <div className="space-y-3 text-xs font-mono">
-                    <div className="bg-[#07090E] p-3 rounded border border-slate-800 flex items-center justify-between">
-                      <span className="text-slate-400">Max Monetary Risk (Capital at Risk):</span>
-                      <span className="text-sm font-bold text-rose-400">${riskAnalysis.monetaryRisk.toFixed(2)}</span>
-                    </div>
-
-                    <div className="bg-[#07090E] p-3 rounded border border-slate-800 flex items-center justify-between">
-                      <span className="text-slate-400">Recommended Position Size:</span>
-                      <span className="text-sm font-bold text-amber-300">
-                        {riskAnalysis.positionUnits.toFixed(4)} {activeAsset.symbol.split('/')[0]}
-                      </span>
-                    </div>
-
-                    <div className="bg-[#07090E] p-3 rounded border border-slate-800 flex items-center justify-between">
-                      <span className="text-slate-400">Total Notional Position Value:</span>
-                      <span className="text-sm font-bold text-white">${riskAnalysis.positionValue.toFixed(2)} USDT</span>
-                    </div>
-
-                    <div className="bg-[#07090E] p-3 rounded border border-slate-800 flex items-center justify-between">
-                      <span className="text-slate-400">Risk-to-Reward Ratio:</span>
-                      <span className={`text-sm font-bold ${riskAnalysis.hasPoorRR ? 'text-amber-400' : 'text-emerald-400'}`}>
-                        1 : {riskAnalysis.riskRewardRatio.toFixed(2)}
-                      </span>
-                    </div>
-
-                    <div className="bg-[#07090E] p-3 rounded border border-slate-800 flex items-center justify-between">
-                      <span className="text-slate-400">Potential Profit (at Target):</span>
-                      <span className="text-sm font-bold text-emerald-400">+${riskAnalysis.potentialGain.toFixed(2)}</span>
-                    </div>
-                  </div>
-
-                  {/* Risk Warnings */}
-                  {riskAnalysis.hasPoorRR && (
-                    <div className="mt-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded text-xs text-amber-300 flex items-center gap-2">
-                      <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400" />
-                      <span>Warning: Risk/Reward ratio is below 1:1.5. Quant setups typically demand &ge; 1:2.0 for sustainable expectancy.</span>
-                    </div>
-                  )}
-
-                  {riskAnalysis.hasHighRiskPercent && (
-                    <div className="mt-2 p-3 bg-rose-500/10 border border-rose-500/30 rounded text-xs text-rose-300 flex items-center gap-2">
-                      <ShieldAlert className="w-4 h-4 shrink-0 text-rose-400" />
-                      <span>Danger: Risking &gt;2.5% of account balance significantly elevates risk of ruin during drawdown clusters.</span>
-                    </div>
-                  )}
-                </div>
-
-                <div className="mt-4 pt-3 border-t border-slate-800 text-[10px] text-slate-500 font-mono">
-                  Calculated using exact stop-distance formula: Size = (Balance × Risk%) / |Entry - SL|
-                </div>
-              </div>
-
-            </div>
-          </div>
+          <RiskManagementCalculator
+            currentPrice={activeAsset.price}
+            symbol={selectedSymbol}
+            defaultEntry={calcEntry}
+            defaultStopLoss={calcStopLoss}
+            defaultTakeProfit={calcTarget}
+            externalAccountBalance={accountBalance}
+            onBalanceChange={(newBal) => {
+              setAccountBalance(newBal);
+              setPaperBalance(newBal);
+              setBacktestCapital(newBal);
+            }}
+            onSendToPaperTicket={(params) => {
+              setActiveTab('paper');
+            }}
+          />
         )}
 
         {/* ------------------------------------------------------- */}
@@ -2037,160 +2010,17 @@ export default function App() {
         {/* TAB 3: STRATEGY BACKTESTER & WALK-FORWARD TESTING        */}
         {/* ------------------------------------------------------- */}
         {activeTab === 'backtester' && (
-          <div className="space-y-6">
-            <div className="bg-[#0F1420] border border-slate-800 rounded-lg p-5">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div>
-                  <h2 className="text-base font-bold text-white tracking-tight">
-                    Quantitative Strategy Backtesting Engine
-                  </h2>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    Rigorous event-driven simulation with fee haircut, slippage model, and out-of-sample walk-forward validation.
-                  </p>
-                </div>
-                <div className="flex items-center gap-2 text-xs font-mono">
-                  <span className="text-slate-400">Dataset:</span>
-                  <span className="text-white font-bold">2018–2025 (Daily Bars)</span>
-                </div>
-              </div>
-
-              {/* Strategy Parameters Grid */}
-              <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 p-4 bg-[#07090E] rounded mt-4 border border-slate-800 text-xs">
-                <div>
-                  <label className="block text-slate-400 font-mono mb-1">Select Strategy</label>
-                  <select
-                    value={selectedStrategy}
-                    onChange={(e) => setSelectedStrategy(e.target.value)}
-                    className="w-full bg-[#0F1420] border border-slate-700 rounded p-1.5 text-amber-300 font-medium"
-                  >
-                    <option value="Pullback Continuation">Pullback Continuation (EMA 50 + RSI)</option>
-                    <option value="Trend Following">Trend Following (EMA 21/50 + MACD)</option>
-                    <option value="Breakout Retest">Resistance Breakout + Retest</option>
-                    <option value="Mean Reversion">Bollinger Bands Mean Reversion</option>
-                    <option value="MA Crossover">EMA 21 / EMA 50 Crossover</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-slate-400 font-mono mb-1">Initial Capital ($)</label>
-                  <input
-                    type="number"
-                    value={backtestCapital}
-                    onChange={(e) => setBacktestCapital(Number(e.target.value))}
-                    className="w-full bg-[#0F1420] border border-slate-700 rounded p-1.5 text-white font-mono"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-slate-400 font-mono mb-1">Fee per Trade (%)</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={backtestFee}
-                    onChange={(e) => setBacktestFee(Number(e.target.value))}
-                    className="w-full bg-[#0F1420] border border-slate-700 rounded p-1.5 text-white font-mono"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-slate-400 font-mono mb-1">Risk per Trade (%)</label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    value={backtestRiskPerTrade}
-                    onChange={(e) => setBacktestRiskPerTrade(Number(e.target.value))}
-                    className="w-full bg-[#0F1420] border border-slate-700 rounded p-1.5 text-white font-mono"
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* Backtest Metrics Scorecard */}
-            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-              {[
-                { label: 'TOTAL TRADES', val: '248', color: 'text-white' },
-                { label: 'WIN RATE', val: '56.4%', color: 'text-emerald-400' },
-                { label: 'PROFIT FACTOR', val: '1.92', color: 'text-amber-400' },
-                { label: 'NET RETURN', val: '+284.5%', color: 'text-emerald-400' },
-                { label: 'MAX DRAWDOWN', val: '-16.8%', color: 'text-rose-400' },
-                { label: 'SHARPE RATIO', val: '1.68', color: 'text-cyan-400' },
-                { label: 'SORTINO RATIO', val: '2.41', color: 'text-cyan-400' },
-                { label: 'AVERAGE WIN', val: '+4.8%', color: 'text-emerald-400' },
-                { label: 'AVERAGE LOSS', val: '-2.1%', color: 'text-rose-400' },
-                { label: 'EXPECTANCY', val: '+$182.40', color: 'text-white' },
-                { label: 'MAX WIN STREAK', val: '7 trades', color: 'text-slate-300' },
-                { label: 'MAX LOSS STREAK', val: '4 trades', color: 'text-slate-300' },
-              ].map((m, i) => (
-                <div key={i} className="bg-[#0F1420] border border-slate-800 p-3 rounded">
-                  <div className="text-[10px] font-mono text-slate-500">{m.label}</div>
-                  <div className={`text-base font-mono font-bold mt-0.5 ${m.color}`}>{m.val}</div>
-                </div>
-              ))}
-            </div>
-
-            {/* Simulated Equity Curve Visualization */}
-            <div className="bg-[#0F1420] border border-slate-800 rounded-lg p-5">
-              <div className="flex items-center justify-between mb-4 border-b border-slate-800 pb-3">
-                <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-                  <TrendingUp className="w-4 h-4 text-emerald-400" />
-                  <span>Cumulative Equity Curve (Strategy vs. Buy & Hold Benchmark)</span>
-                </h3>
-                <span className="text-xs font-mono text-slate-500">Includes 0.05% taker fee</span>
-              </div>
-
-              {/* SVG Equity Curve */}
-              <div className="w-full h-44 bg-[#07090E] rounded border border-slate-800/80 p-3 relative flex flex-col justify-end">
-                <svg viewBox="0 0 800 120" className="w-full h-full">
-                  {/* Benchmark curve */}
-                  <path
-                    d="M 0,100 Q 200,80 400,60 T 800,20"
-                    fill="none"
-                    stroke="#475569"
-                    strokeWidth="1.5"
-                    strokeDasharray="4 4"
-                  />
-                  {/* Strategy equity curve */}
-                  <path
-                    d="M 0,100 L 80,95 L 140,88 L 220,72 L 300,75 L 380,55 L 460,42 L 540,48 L 620,32 L 700,22 L 800,8"
-                    fill="none"
-                    stroke="#10B981"
-                    strokeWidth="2"
-                  />
-                </svg>
-                <div className="flex items-center justify-between text-[11px] font-mono text-slate-400 pt-2 border-t border-slate-800/60">
-                  <span className="flex items-center gap-1.5 text-emerald-400 font-semibold">
-                    <span className="w-2.5 h-0.5 bg-emerald-400 inline-block" />
-                    Strategy Equity ($38,450)
-                  </span>
-                  <span className="flex items-center gap-1.5 text-slate-400">
-                    <span className="w-2.5 h-0.5 bg-slate-500 inline-block stroke-dasharray" />
-                    Buy & Hold Benchmark ($27,100)
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Bias Audit & Walk-Forward Partition */}
-            <div className="bg-[#0F1420] border border-slate-800 rounded-lg p-5">
-              <h3 className="text-sm font-semibold text-white mb-3">Walk-Forward Validation & Bias Audit</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-                <div className="bg-[#07090E] p-3 rounded border border-slate-800 space-y-1.5">
-                  <div className="font-semibold text-amber-300 font-mono">1. Walk-Forward Partition:</div>
-                  <div className="text-slate-400"><strong>In-Sample (Train):</strong> 2018–2023 (Parameters tuned on this window)</div>
-                  <div className="text-slate-400"><strong>Out-of-Sample (Test):</strong> 2024–2025 (Strictly untouched forward evaluation)</div>
-                  <div className="text-emerald-400 font-mono text-[11px] mt-1">✓ Out-of-Sample Win Rate: 54.1% (Consistent with in-sample 56.4%)</div>
-                </div>
-
-                <div className="bg-[#07090E] p-3 rounded border border-slate-800 space-y-1.5">
-                  <div className="font-semibold text-cyan-300 font-mono">2. Quantitative Bias Checklist:</div>
-                  <div className="text-slate-400">✓ <strong>Zero Look-Ahead Bias:</strong> Signals trigger on bar close, enter on next bar open.</div>
-                  <div className="text-slate-400">✓ <strong>No Survivorship Bias:</strong> Evaluated on active asset history.</div>
-                  <div className="text-slate-400">✓ <strong>Execution Realism:</strong> Deducted 0.05% taker fee and 0.02% slippage.</div>
-                </div>
-              </div>
-            </div>
-
-          </div>
+          <BacktestPerformanceDashboard
+            candles={liveCandles}
+            symbol={selectedSymbol}
+            timeframe={timeframe}
+            externalCapital={backtestCapital}
+            onCapitalChange={(newCap) => {
+              setBacktestCapital(newCap);
+              setAccountBalance(newCap);
+              setPaperBalance(newCap);
+            }}
+          />
         )}
 
         {/* ------------------------------------------------------- */}
@@ -2381,6 +2211,11 @@ export default function App() {
             currentSymbol={selectedSymbol}
             currentPrice={activeAsset.price}
             onSelectSymbol={(s) => setSelectedSymbol(s)}
+            onAccountBalanceChange={(newBal) => {
+              setPaperBalance(newBal);
+              setAccountBalance(newBal);
+              setBacktestCapital(newBal);
+            }}
           />
         )}
 

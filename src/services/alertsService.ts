@@ -47,10 +47,58 @@ export interface TriggeredAlert {
 
 const DEFAULT_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes anti-spam cooldown
 
+export type NotificationType =
+  | 'SIGNAL_DETECTED'
+  | 'BACKTEST_COMPLETED'
+  | 'OPTIMIZATION_COMPLETED'
+  | 'DATA_FAILURE'
+  | 'API_FAILURE'
+  | 'RISK_LIMIT_REACHED'
+  | 'PAPER_POSITION_OPENED'
+  | 'PAPER_POSITION_CLOSED'
+  | 'SYSTEM_WARNING';
+
+export interface AppNotification {
+  id: string;
+  type: NotificationType;
+  title: string;
+  message: string;
+  timestamp: string;
+  read: boolean;
+  severity: 'INFO' | 'WARNING' | 'CRITICAL';
+  metadata?: Record<string, any>;
+}
+
+export interface NotificationPreferences {
+  emailAlerts: boolean;
+  inAppAlerts: boolean;
+  externalWebhook: boolean;
+  webhookUrl?: string;
+  typesEnabled: Record<NotificationType, boolean>;
+}
+
 export class AlertsManager {
   private rules: AlertRule[] = [];
   private history: TriggeredAlert[] = [];
+  private notifications: AppNotification[] = [];
   private listeners: Array<(alert: TriggeredAlert) => void> = [];
+  private notificationListeners: Array<(notif: AppNotification) => void> = [];
+  private preferences: NotificationPreferences = {
+    emailAlerts: false,
+    inAppAlerts: true,
+    externalWebhook: false,
+    typesEnabled: {
+      SIGNAL_DETECTED: true,
+      BACKTEST_COMPLETED: true,
+      OPTIMIZATION_COMPLETED: true,
+      DATA_FAILURE: true,
+      API_FAILURE: true,
+      RISK_LIMIT_REACHED: true,
+      PAPER_POSITION_OPENED: true,
+      PAPER_POSITION_CLOSED: true,
+      SYSTEM_WARNING: true
+    }
+  };
 
   constructor() {
     this.loadDefaultRules();
@@ -232,6 +280,87 @@ export class AlertsManager {
         this.listeners.forEach(l => l(alertItem));
       }
     }
+  }
+
+  // --- Notification Center Engine ---
+
+  public dispatchNotification(
+    type: NotificationType,
+    title: string,
+    message: string,
+    severity: 'INFO' | 'WARNING' | 'CRITICAL' = 'INFO',
+    metadata?: Record<string, any>
+  ): AppNotification | null {
+    if (!this.preferences.inAppAlerts) return null;
+    if (this.preferences.typesEnabled[type] === false) return null;
+
+    const notif: AppNotification = {
+      id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      type,
+      title,
+      message,
+      timestamp: new Date().toISOString(),
+      read: false,
+      severity,
+      metadata
+    };
+
+    this.notifications.unshift(notif);
+    if (this.notifications.length > 100) this.notifications.pop();
+
+    this.notificationListeners.forEach(listener => {
+      try {
+        listener(notif);
+      } catch {
+        // Safe dispatch
+      }
+    });
+
+    return notif;
+  }
+
+  public getNotifications(): AppNotification[] {
+    return [...this.notifications];
+  }
+
+  public getUnreadCount(): number {
+    return this.notifications.filter(n => !n.read).length;
+  }
+
+  public markAsRead(id: string): void {
+    const n = this.notifications.find(item => item.id === id);
+    if (n) n.read = true;
+  }
+
+  public markAllAsRead(): void {
+    this.notifications.forEach(n => { n.read = true; });
+  }
+
+  public clearNotifications(): void {
+    this.notifications = [];
+  }
+
+  public getPreferences(): NotificationPreferences {
+    return { ...this.preferences };
+  }
+
+  public updatePreferences(updates: Partial<NotificationPreferences>): NotificationPreferences {
+    this.preferences = {
+      ...this.preferences,
+      ...updates,
+      typesEnabled: {
+        ...this.preferences.typesEnabled,
+        ...(updates.typesEnabled || {})
+      }
+    };
+    return { ...this.preferences };
+  }
+
+  public subscribeNotifications(callback: (notif: AppNotification) => void): () => void {
+    this.notificationListeners.push(callback);
+    return () => {
+      this.notificationListeners = this.notificationListeners.filter(l => l !== callback);
+    };
   }
 }
 

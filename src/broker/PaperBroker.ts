@@ -25,7 +25,9 @@ import {
   PlaceOrderParams,
   BrokerConfig,
   PositionSide,
-  OrderSide
+  OrderSide,
+  ResetAccountOptions,
+  AccountSettings
 } from './types';
 
 export class PaperBroker implements IBrokerAdapter {
@@ -33,6 +35,7 @@ export class PaperBroker implements IBrokerAdapter {
   public readonly isPaper: boolean = true;
   public readonly environment: 'PAPER' = 'PAPER';
 
+  private currency: string = 'USD';
   private startingBalance: number;
   private balance: number;
   private usedMargin: number = 0;
@@ -73,9 +76,9 @@ export class PaperBroker implements IBrokerAdapter {
       { symbol: 'BTC/USDT', price: 88450.25, change24h: 3.42 },
       { symbol: 'ETH/USDT', price: 3340.50, change24h: 2.15 },
       { symbol: 'SOL/USDT', price: 184.20, change24h: 5.80 },
-      { symbol: 'XAU/USD', price: 2685.40, change24h: 0.45 },
-      { symbol: 'EUR/USD', price: 1.0845, change24h: -0.18 },
-      { symbol: 'SPX', price: 5780.20, change24h: 0.62 }
+      { symbol: 'XAU/USD', price: 4136.90, change24h: -0.57 },
+      { symbol: 'EUR/USD', price: 1.1199, change24h: -0.18 },
+      { symbol: 'SPX', price: 5864.20, change24h: 0.62 }
     ];
 
     const now = Date.now();
@@ -260,10 +263,11 @@ export class PaperBroker implements IBrokerAdapter {
     const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 99.99 : 0;
 
     this.updateDrawdown(equity);
+    const currentDrawdown = this.peakEquity > 0 ? Math.max(0, ((this.peakEquity - equity) / this.peakEquity) * 100) : 0;
 
     return {
       accountId: 'PAPER-ACC-QUANT-001',
-      currency: 'USDT',
+      currency: this.currency,
       startingBalance: this.startingBalance,
       balance: Number(this.balance.toFixed(2)),
       equity: Number(equity.toFixed(2)),
@@ -280,6 +284,8 @@ export class PaperBroker implements IBrokerAdapter {
       winRate: Number(winRate.toFixed(2)),
       profitFactor: Number(profitFactor.toFixed(2)),
       maxDrawdownPercent: Number(this.maxDrawdownPercent.toFixed(2)),
+      peakEquity: Number(this.peakEquity.toFixed(2)),
+      currentDrawdownPercent: Number(currentDrawdown.toFixed(2)),
       environment: 'PAPER_SIMULATION',
       isPaper: true,
       lastUpdated: new Date().toISOString()
@@ -348,9 +354,28 @@ export class PaperBroker implements IBrokerAdapter {
     if (!params.symbol || typeof params.symbol !== 'string') {
       throw new Error('Order rejected: Invalid or missing symbol.');
     }
-    const quote = this.marketQuotes.get(params.symbol);
+
+    // Ensure quote exists; if missing, initialize from provided currentPrice or price
+    let quote = this.marketQuotes.get(params.symbol);
+    const providedPrice = params.currentPrice && params.currentPrice > 0
+      ? params.currentPrice
+      : params.price && params.price > 0
+      ? params.price
+      : undefined;
+
+    if (!quote && providedPrice) {
+      this.updateMarketPrice(params.symbol, providedPrice);
+      quote = this.marketQuotes.get(params.symbol);
+    }
+
     if (!quote) {
       throw new Error(`Order rejected: Symbol '${params.symbol}' is not actively tracked.`);
+    }
+
+    // If fresh live price was provided in the ticket/order proposal, synchronize the market quote
+    if (providedPrice && providedPrice > 0) {
+      this.updateMarketPrice(params.symbol, providedPrice);
+      quote = this.marketQuotes.get(params.symbol)!;
     }
 
     if (!params.quantity || isNaN(params.quantity) || params.quantity <= 0) {
@@ -556,8 +581,22 @@ export class PaperBroker implements IBrokerAdapter {
     return pos;
   }
 
-  public async resetAccount(startingBalance?: number): Promise<AccountSummary> {
-    const capital = startingBalance && startingBalance > 0 ? startingBalance : this.startingBalance;
+  public async resetAccount(options?: number | ResetAccountOptions): Promise<AccountSummary> {
+    let capital = this.startingBalance;
+    let preserveJournal = false;
+    let clearPositions = true;
+    let clearOrders = true;
+
+    if (typeof options === 'number') {
+      if (options > 0) capital = options;
+    } else if (options && typeof options === 'object') {
+      if (options.startingBalance && options.startingBalance > 0) capital = options.startingBalance;
+      if (options.preserveJournal) preserveJournal = true;
+      if (options.currency) this.currency = options.currency;
+      if (options.clearOpenPositions === false) clearPositions = false;
+      if (options.clearOpenOrders === false) clearOrders = false;
+    }
+
     this.startingBalance = capital;
     this.balance = capital;
     this.usedMargin = 0;
@@ -566,13 +605,55 @@ export class PaperBroker implements IBrokerAdapter {
     this.peakEquity = capital;
     this.maxDrawdownPercent = 0;
 
-    this.positions.clear();
-    this.openOrders.clear();
-    this.orderHistory = [];
-    this.trades = [];
+    if (clearPositions) {
+      this.positions.clear();
+    }
+    if (clearOrders) {
+      this.openOrders.clear();
+      this.orderHistory = [];
+    }
+    if (!preserveJournal) {
+      this.trades = [];
+    }
 
     this.initDefaultQuotes();
     return this.getAccount();
+  }
+
+  public async setStartingBalance(newBalance: number): Promise<AccountSummary> {
+    if (newBalance <= 0) {
+      throw new Error('Starting balance must be greater than zero.');
+    }
+    // Calculate difference to adjust current cash balance proportionally
+    const delta = newBalance - this.startingBalance;
+    this.startingBalance = newBalance;
+    this.balance = Math.max(0, this.balance + delta);
+    this.peakEquity = Math.max(this.peakEquity, newBalance);
+    return this.getAccount();
+  }
+
+  public setCurrency(curr: string): void {
+    if (curr && curr.trim()) {
+      this.currency = curr.trim().toUpperCase();
+    }
+  }
+
+  public async getAccountSettings(): Promise<AccountSettings> {
+    const acc = await this.getAccount();
+    return {
+      startingBalance: acc.startingBalance,
+      currentBalance: acc.balance,
+      availableBalance: acc.availableBalance,
+      usedMargin: acc.usedMargin,
+      unrealizedPnL: acc.unrealizedPnL,
+      realizedPnL: acc.realizedPnL,
+      totalFees: acc.totalFeesPaid,
+      equity: acc.equity,
+      peakEquity: acc.peakEquity ?? acc.equity,
+      currentDrawdown: acc.currentDrawdownPercent ?? 0,
+      maximumDrawdown: acc.maxDrawdownPercent,
+      currency: this.currency
+    };
   }
 
   private updateDrawdown(currentEquity?: number): void {

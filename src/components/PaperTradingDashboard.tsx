@@ -51,12 +51,14 @@ interface PaperTradingDashboardProps {
   currentSymbol?: string;
   currentPrice?: number;
   onSelectSymbol?: (symbol: string) => void;
+  onAccountBalanceChange?: (newBalance: number) => void;
 }
 
 export const PaperTradingDashboard: React.FC<PaperTradingDashboardProps> = ({
   currentSymbol = 'BTC/USDT',
   currentPrice = 88450.25,
-  onSelectSymbol
+  onSelectSymbol,
+  onAccountBalanceChange
 }) => {
   // Account State
   const [account, setAccount] = useState<AccountSummary | null>(null);
@@ -87,6 +89,10 @@ export const PaperTradingDashboard: React.FC<PaperTradingDashboardProps> = ({
   // Reset Account Dialog
   const [isResetConfirmOpen, setIsResetConfirmOpen] = useState<boolean>(false);
   const [resetStartingCapital, setResetStartingCapital] = useState<number>(100000);
+  const [resetPreserveJournal, setResetPreserveJournal] = useState<boolean>(true);
+  const [resetClearPositions, setResetClearPositions] = useState<boolean>(true);
+  const [resetClearOrders, setResetClearOrders] = useState<boolean>(true);
+  const [resetCurrency, setResetCurrency] = useState<string>('USD');
 
   // Filters for Trade Journal
   const [journalSymbolFilter, setJournalSymbolFilter] = useState<string>('ALL');
@@ -203,11 +209,20 @@ export const PaperTradingDashboard: React.FC<PaperTradingDashboardProps> = ({
     }
   };
 
-  // Reset account
+  // Reset account with configurable starting balance & options
   const handleResetAccount = async () => {
     try {
-      await PaperTradingClient.resetAccount(resetStartingCapital);
+      const updated = await PaperTradingClient.resetAccount({
+        startingBalance: resetStartingCapital,
+        preserveJournal: resetPreserveJournal,
+        clearOpenPositions: resetClearPositions,
+        clearOpenOrders: resetClearOrders,
+        currency: resetCurrency
+      });
       setIsResetConfirmOpen(false);
+      if (onAccountBalanceChange) {
+        onAccountBalanceChange(updated.startingBalance);
+      }
       await loadDashboardData();
     } catch (err: any) {
       alert(`Failed to reset paper account: ${err.message}`);
@@ -897,36 +912,128 @@ export const PaperTradingDashboard: React.FC<PaperTradingDashboardProps> = ({
       {/* Reset Account Modal */}
       {isResetConfirmOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-          <div className="bg-[#0D111A] border border-slate-700 rounded-xl p-5 w-full max-w-md shadow-2xl space-y-4">
-            <div className="flex items-center gap-2 text-rose-400 font-bold text-sm">
-              <RotateCcw className="w-4 h-4" />
-              <span>Reset Paper Account</span>
+          <div className="bg-[#0D111A] border border-slate-700 rounded-xl p-5 w-full max-w-lg shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+              <div className="flex items-center gap-2 text-rose-400 font-bold text-sm">
+                <RotateCcw className="w-4 h-4" />
+                <span>Reset Paper Account & Configure Starting Balance</span>
+              </div>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400">
+                Paper Simulation
+              </span>
             </div>
+
             <p className="text-xs text-slate-300 leading-relaxed">
-              This will clear all active simulated positions, pending paper orders, and trade history. Your account cash will be restored to the starting balance.
+              Configure your paper starting balance or reset simulated account metrics. Research journal data can be preserved or cleared based on your choice below.
             </p>
-            <div>
-              <label className="text-slate-400 text-xs font-mono block mb-1">Starting Balance (USDT)</label>
-              <input
-                type="number"
-                value={resetStartingCapital}
-                onChange={(e) => setResetStartingCapital(parseFloat(e.target.value) || 100000)}
-                className="w-full bg-[#141A26] border border-slate-700 rounded p-2 text-white font-mono text-xs"
-              />
+
+            {/* Quick Balance Presets */}
+            <div className="space-y-1.5">
+              <label className="text-slate-400 text-xs font-mono block">Starting Balance Presets (USD)</label>
+              <div className="flex flex-wrap gap-1.5">
+                {[100, 500, 1000, 10000, 50000, 100000, 1000000].map((amt) => (
+                  <button
+                    key={amt}
+                    type="button"
+                    onClick={() => setResetStartingCapital(amt)}
+                    className={`px-2.5 py-1 rounded text-xs font-mono font-bold transition-all ${
+                      resetStartingCapital === amt
+                        ? 'bg-amber-400 text-slate-950 shadow-sm'
+                        : 'bg-[#141A26] border border-slate-700 text-slate-300 hover:text-white'
+                    }`}
+                  >
+                    ${amt >= 1000000 ? '1,000,000' : amt >= 1000 ? amt.toLocaleString() : amt}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div className="flex items-center justify-end gap-3 pt-2">
-              <button
-                onClick={() => setIsResetConfirmOpen(false)}
-                className="px-3 py-1.5 rounded text-xs font-mono text-slate-400 hover:text-white"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleResetAccount}
-                className="px-4 py-1.5 rounded text-xs font-mono font-bold bg-rose-600 hover:bg-rose-500 text-white transition-colors"
-              >
-                Confirm Reset
-              </button>
+
+            {/* Custom Input */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-slate-400 text-xs font-mono block mb-1">Custom Starting Balance</label>
+                <input
+                  type="number"
+                  min="1"
+                  step="100"
+                  value={resetStartingCapital}
+                  onChange={(e) => setResetStartingCapital(parseFloat(e.target.value) || 10000)}
+                  className="w-full bg-[#141A26] border border-slate-700 rounded p-2 text-white font-mono text-xs font-bold focus:outline-none focus:border-amber-400"
+                />
+              </div>
+              <div>
+                <label className="text-slate-400 text-xs font-mono block mb-1">Account Currency</label>
+                <select
+                  value={resetCurrency}
+                  onChange={(e) => setResetCurrency(e.target.value)}
+                  className="w-full bg-[#141A26] border border-slate-700 rounded p-2 text-white font-mono text-xs font-bold focus:outline-none focus:border-amber-400 cursor-pointer"
+                >
+                  <option value="USD">USD (United States Dollar)</option>
+                  <option value="USDT">USDT (Tether USD)</option>
+                  <option value="EUR">EUR (Euro)</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Granular Reset Checkboxes (Section 5 requirement) */}
+            <div className="bg-[#080B12] border border-slate-800 rounded-lg p-3 space-y-2 text-xs font-mono">
+              <span className="text-[10px] text-slate-400 font-bold block uppercase tracking-wider">
+                Reset Scope & Data Preservation Options
+              </span>
+
+              <label className="flex items-center gap-2 text-slate-300 cursor-pointer hover:text-white">
+                <input
+                  type="checkbox"
+                  checked={resetPreserveJournal}
+                  onChange={(e) => setResetPreserveJournal(e.target.checked)}
+                  className="rounded bg-slate-900 border-slate-700 text-amber-500 focus:ring-0"
+                />
+                <span className="text-emerald-300 font-bold">Keep Trade Journal & Performance History</span>
+                <span className="text-[10px] text-slate-500">(Protects research notes and statistics)</span>
+              </label>
+
+              <label className="flex items-center gap-2 text-slate-300 cursor-pointer hover:text-white">
+                <input
+                  type="checkbox"
+                  checked={resetClearPositions}
+                  onChange={(e) => setResetClearPositions(e.target.checked)}
+                  className="rounded bg-slate-900 border-slate-700 text-rose-500 focus:ring-0"
+                />
+                <span>Close all active simulated open positions</span>
+              </label>
+
+              <label className="flex items-center gap-2 text-slate-300 cursor-pointer hover:text-white">
+                <input
+                  type="checkbox"
+                  checked={resetClearOrders}
+                  onChange={(e) => setResetClearOrders(e.target.checked)}
+                  className="rounded bg-slate-900 border-slate-700 text-rose-500 focus:ring-0"
+                />
+                <span>Cancel all pending paper limit & stop orders</span>
+              </label>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex items-center justify-between pt-2 border-t border-slate-800">
+              <div className="text-[10px] text-slate-500 font-mono">
+                Formula: Risk 1% = ${(resetStartingCapital * 0.01).toFixed(2)}
+              </div>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setIsResetConfirmOpen(false)}
+                  className="px-3 py-1.5 rounded text-xs font-mono text-slate-400 hover:text-white"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleResetAccount}
+                  className="px-4 py-1.5 rounded text-xs font-mono font-bold bg-rose-600 hover:bg-rose-500 text-white transition-colors shadow-lg shadow-rose-950/40"
+                >
+                  Confirm Reset to ${resetStartingCapital.toLocaleString()}
+                </button>
+              </div>
             </div>
           </div>
         </div>

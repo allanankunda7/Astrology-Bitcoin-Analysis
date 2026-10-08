@@ -65,8 +65,11 @@ export interface IBrokerAdapter {
   /** Close an existing open position at current market price */
   closePaperPosition(positionId: string, reason?: string): Promise<Position>;
 
-  /** Reset paper account back to starting state */
-  resetAccount(startingBalance?: number): Promise<AccountSummary>;
+  /** Reset paper account back to starting state with granular options */
+  resetAccount(options?: number | import('./types').ResetAccountOptions): Promise<AccountSummary>;
+
+  /** Update starting balance without clearing trade records */
+  setStartingBalance(balance: number): Promise<AccountSummary>;
 
   /** Feed a new market price tick into the broker to trigger order matching and SL/TP checks */
   updateMarketPrice(symbol: string, newPrice: number): void;

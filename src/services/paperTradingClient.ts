@@ -23,7 +23,9 @@ import {
   Position,
   TradeRecord,
   MarketDataQuote,
-  PlaceOrderParams
+  PlaceOrderParams,
+  ResetAccountOptions,
+  AccountSettings
 } from '../broker/types';
 
 export class PaperTradingClient {
@@ -37,6 +39,23 @@ export class PaperTradingClient {
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error || `Failed to fetch account status (${res.status})`);
+    }
+    const data = await res.json();
+    return data.account;
+  }
+
+  /**
+   * Update starting balance directly
+   */
+  public static async setStartingBalance(startingBalance: number): Promise<AccountSummary> {
+    const res = await fetch(`${this.baseUrl}/api/accounts/balance`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ startingBalance })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `Failed to set starting balance (${res.status})`);
     }
     const data = await res.json();
     return data.account;
@@ -138,13 +157,14 @@ export class PaperTradingClient {
   }
 
   /**
-   * Reset the paper account
+   * Reset the paper account with granular options
    */
-  public static async resetAccount(startingBalance?: number): Promise<AccountSummary> {
+  public static async resetAccount(options?: number | ResetAccountOptions): Promise<AccountSummary> {
+    const payload = typeof options === 'number' ? { startingBalance: options } : (options || {});
     const res = await fetch(`${this.baseUrl}/api/paper/account/reset`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ startingBalance })
+      body: JSON.stringify(payload)
     });
 
     if (!res.ok) {
@@ -154,6 +174,22 @@ export class PaperTradingClient {
 
     const data = await res.json();
     return data.account;
+  }
+
+  /**
+   * Request centralized risk calculation from backend
+   */
+  public static async calculateRisk(params: any): Promise<any> {
+    const res = await fetch(`${this.baseUrl}/api/risk/calculate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `Failed to calculate risk (${res.status})`);
+    }
+    return await res.json();
   }
 
   /**

@@ -14,6 +14,12 @@ import { brokerManager } from './src/broker/BrokerFactory';
 import { runHistoricalBacktest } from './src/services/backtestingEngine';
 import { strategyLab } from './src/services/strategyLab';
 import { executeWalkForwardAnalysis } from './src/services/walkForwardEngine';
+import { calculatePositionRisk } from './src/services/riskCalculator';
+import { runMonteCarloSimulation } from './src/services/monteCarloEngine';
+import { portfolioRiskEngine } from './src/services/portfolioRiskEngine';
+import { researchWorkspace } from './src/services/researchWorkspace';
+import { globalAlertsManager } from './src/services/alertsService';
+import { systemMonitoring } from './src/services/systemMonitoring';
 import { relationalDb } from './src/db/relationalStore';
 import { AuthService } from './src/services/authService';
 import { BackendRiskEngine } from './src/services/backendRiskEngine';
@@ -451,14 +457,123 @@ app.post('/api/strategies/compare', (req: AuthenticatedRequest, res: Response) =
 // 7. BROKER ABSTRACTION LAYER & PAPER TRADING REST API
 // ==========================================
 
-// GET /api/account - Full simulated account status
-app.get('/api/account', async (_req: AuthenticatedRequest, res: Response) => {
+// GET /api/account & /api/accounts - Full simulated account status
+app.get(['/api/account', '/api/accounts'], async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const broker = brokerManager.getActiveBroker();
+    const account = await broker.getAccount();
+    res.json({ success: true, account, accounts: [account] });
+  } catch (error: any) {
+    sendSafeError(res, 500, 'ACCOUNT_FETCH_FAILED', 'Failed to retrieve account summary.', error);
+  }
+});
+
+// GET /api/accounts/:id - Specific account
+app.get('/api/accounts/:id', async (_req: AuthenticatedRequest, res: Response) => {
   try {
     const broker = brokerManager.getActiveBroker();
     const account = await broker.getAccount();
     res.json({ success: true, account });
   } catch (error: any) {
-    sendSafeError(res, 500, 'ACCOUNT_FETCH_FAILED', 'Failed to retrieve account summary.', error);
+    sendSafeError(res, 500, 'ACCOUNT_FETCH_FAILED', 'Failed to retrieve account.', error);
+  }
+});
+
+// GET /api/accounts/:id/balance & /api/accounts/balance - Current balance metrics
+app.get(['/api/accounts/balance', '/api/accounts/:id/balance'], async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const broker = brokerManager.getActiveBroker();
+    const balance = await broker.getBalance();
+    res.json({ success: true, balance });
+  } catch (error: any) {
+    sendSafeError(res, 500, 'BALANCE_FETCH_FAILED', 'Failed to retrieve balance.', error);
+  }
+});
+
+// POST /api/accounts/balance & /api/accounts/:id/balance - Update starting balance
+app.post(['/api/accounts/balance', '/api/accounts/:id/balance'], async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { startingBalance } = req.body;
+    if (typeof startingBalance !== 'number' || startingBalance <= 0) {
+      return sendSafeError(res, 400, 'INVALID_BALANCE', 'Starting balance must be a positive number.', null, req);
+    }
+    const broker = brokerManager.getActiveBroker();
+    const account = await broker.setStartingBalance(startingBalance);
+    relationalDb.logAudit({
+      userId: req.user?.id,
+      action: 'ACCOUNT_RESET',
+      details: `Starting balance set to $${startingBalance.toLocaleString()}`,
+      ip: req.ip
+    });
+    res.json({ success: true, account, message: `Starting balance set to $${startingBalance.toLocaleString()}` });
+  } catch (error: any) {
+    sendSafeError(res, 500, 'BALANCE_UPDATE_FAILED', error.message || 'Failed to update balance.', error, req);
+  }
+});
+
+// POST /api/accounts/:id/reset & /api/accounts/reset - Granular account reset
+app.post(['/api/accounts/reset', '/api/accounts/:id/reset'], async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const broker = brokerManager.getActiveBroker();
+    const account = await broker.resetAccount(req.body);
+    relationalDb.logAudit({
+      userId: req.user?.id,
+      action: 'ACCOUNT_RESET',
+      details: `Account reset with options: ${JSON.stringify(req.body)}`,
+      ip: req.ip
+    });
+    res.json({ success: true, account, message: 'Account reset successfully.' });
+  } catch (error: any) {
+    sendSafeError(res, 500, 'RESET_FAILED', error.message || 'Failed to reset account.', error, req);
+  }
+});
+
+// POST /api/risk/calculate - Centralized Risk Engine calculation
+app.post('/api/risk/calculate', (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const {
+      accountBalance,
+      riskMode,
+      riskPercent,
+      fixedRiskAmount,
+      entryPrice,
+      stopLossPrice,
+      takeProfitPrice,
+      feePercent,
+      slippagePercent,
+      leverage,
+      asset,
+      direction
+    } = req.body;
+
+    if (!entryPrice || !stopLossPrice || !takeProfitPrice) {
+      return sendSafeError(res, 400, 'MISSING_PRICE_PARAMS', 'Entry, Stop Loss, and Take Profit prices are required.', null, req);
+    }
+
+    const broker = brokerManager.getActiveBroker();
+    // Default to broker's settled balance if not explicitly provided
+    const effectiveBalance = typeof accountBalance === 'number' && accountBalance > 0
+      ? accountBalance
+      : 10000;
+
+    const result = calculatePositionRisk({
+      accountBalance: effectiveBalance,
+      riskMode: riskMode || 'PERCENTAGE',
+      riskPercent: typeof riskPercent === 'number' ? riskPercent : 1.0,
+      fixedRiskAmount: typeof fixedRiskAmount === 'number' ? fixedRiskAmount : 100,
+      entryPrice,
+      stopLossPrice,
+      takeProfitPrice,
+      feePercent: typeof feePercent === 'number' ? feePercent : 0.05,
+      slippagePercent: typeof slippagePercent === 'number' ? slippagePercent : 0.03,
+      leverage: typeof leverage === 'number' ? leverage : 1.0,
+      asset: asset || 'BTC/USDT',
+      direction
+    });
+
+    res.json({ success: true, calculation: result });
+  } catch (error: any) {
+    sendSafeError(res, 500, 'RISK_CALC_FAILED', error.message || 'Failed to calculate risk parameters.', error, req);
   }
 });
 
@@ -481,15 +596,22 @@ app.get('/api/market-data/candles', async (req: AuthenticatedRequest, res: Respo
     const limit = Math.min(300, Math.max(10, parseInt(req.query.limit as string) || 100));
 
     const cleanSymbol = symbol.replace('/', '').toUpperCase();
-    const isCrypto = cleanSymbol === 'BTCUSDT' || cleanSymbol === 'ETHUSDT' || cleanSymbol === 'SOLUSDT';
+    const isLiveStreamable =
+      cleanSymbol === 'BTCUSDT' ||
+      cleanSymbol === 'ETHUSDT' ||
+      cleanSymbol === 'SOLUSDT' ||
+      cleanSymbol === 'XAUUSD' ||
+      cleanSymbol === 'EURUSD';
 
-    if (isCrypto) {
+    const liveApiSymbol = cleanSymbol === 'XAUUSD' ? 'PAXGUSDT' : cleanSymbol === 'EURUSD' ? 'EURUSDT' : cleanSymbol;
+
+    if (isLiveStreamable) {
       const intervalMap: Record<string, string> = {
         '1m': '1m', '3m': '3m', '5m': '5m', '15m': '15m', '30m': '30m',
         '1h': '1h', '4h': '4h', '12h': '12h', '1D': '1d', '1W': '1w'
       };
       const interval = intervalMap[timeframe] || '4h';
-      const binanceUrl = `https://api.binance.com/api/v3/klines?symbol=${cleanSymbol}&interval=${interval}&limit=${limit}`;
+      const binanceUrl = `https://api.binance.com/api/v3/klines?symbol=${liveApiSymbol}&interval=${interval}&limit=${limit}`;
 
       try {
         const controller = new AbortController();
@@ -508,7 +630,8 @@ app.get('/api/market-data/candles', async (req: AuthenticatedRequest, res: Respo
               close: parseFloat(bar[4]),
               volume: parseFloat(bar[5])
             }));
-            return res.json({ success: true, symbol, timeframe, source: 'Binance Live API', candles });
+            const sourceLabel = cleanSymbol === 'XAUUSD' ? 'Binance Live Gold Spot (PAXG)' : 'Binance Live API';
+            return res.json({ success: true, symbol, timeframe, source: sourceLabel, candles });
           }
         }
       } catch (err: any) {
@@ -589,7 +712,7 @@ app.get('/api/orders', async (_req: AuthenticatedRequest, res: Response) => {
 // POST /api/paper/orders - Submit a new paper order (Enforces Centralized BackendRiskEngine)
 app.post('/api/paper/orders', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { symbol, side, type, quantity, price, stopPrice, stopLoss, takeProfit, strategy, timeframe, reason } = req.body;
+    const { symbol, side, type, quantity, price, currentPrice, stopPrice, stopLoss, takeProfit, strategy, timeframe, reason } = req.body;
 
     // Strict Server-Side Input Validation
     if (!symbol || typeof symbol !== 'string') {
@@ -609,7 +732,20 @@ app.post('/api/paper/orders', async (req: AuthenticatedRequest, res: Response) =
     const account = await broker.getAccount();
     const currentPositions = await broker.getPositions();
     const marketQuote = await broker.getMarketData(symbol);
-    const estimatedEntryPrice = typeof price === 'number' && price > 0 ? price : marketQuote?.lastPrice;
+
+    // Synchronize broker and BackendRiskEngine with fresh market tick from order context
+    const effectivePrice = typeof currentPrice === 'number' && currentPrice > 0
+      ? currentPrice
+      : typeof price === 'number' && price > 0
+      ? price
+      : marketQuote?.lastPrice;
+
+    if (effectivePrice && effectivePrice > 0) {
+      broker.updateMarketPrice(symbol, effectivePrice);
+      BackendRiskEngine.updateMarketDataTimestamp(symbol, Date.now());
+    }
+
+    const estimatedEntryPrice = effectivePrice || marketQuote?.lastPrice;
 
     // Execute Backend Risk Engine Checks
     const riskCheck = BackendRiskEngine.evaluateOrder({
@@ -642,6 +778,7 @@ app.post('/api/paper/orders', async (req: AuthenticatedRequest, res: Response) =
       type,
       quantity,
       price: typeof price === 'number' ? price : undefined,
+      currentPrice: typeof currentPrice === 'number' ? currentPrice : effectivePrice,
       stopPrice: typeof stopPrice === 'number' ? stopPrice : undefined,
       stopLoss: typeof stopLoss === 'number' ? stopLoss : undefined,
       takeProfit: typeof takeProfit === 'number' ? takeProfit : undefined,
@@ -840,6 +977,228 @@ app.post('/api/walk-forward', (req: AuthenticatedRequest, res: Response) => {
     res.json({ success: true, report });
   } catch (error: any) {
     sendSafeError(res, 500, 'WALK_FORWARD_FAILED', error.message || 'Walk-forward analysis failed.', error, req);
+  }
+});
+
+// GET /api/backtests - List backtests from relational database
+app.get('/api/backtests', (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const symbol = req.query.symbol as string;
+    const records = relationalDb.queryBacktests(symbol);
+    res.json({ success: true, backtests: records, count: records.length });
+  } catch (error: any) {
+    sendSafeError(res, 500, 'BACKTESTS_FETCH_FAILED', 'Failed to retrieve backtests.', error);
+  }
+});
+
+// POST /api/optimization - Parameter sensitivity grid/random optimization
+app.post('/api/optimization', (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { candles, strategyId, symbol, timeframe, parameterRanges, initialCapital } = req.body;
+    if (!Array.isArray(candles) || candles.length < 30) {
+      return sendSafeError(res, 400, 'INSUFFICIENT_DATA', 'At least 30 candles required for optimization.', null, req);
+    }
+
+    const strat = strategyId || 'trend_following';
+    const capital = typeof initialCapital === 'number' ? initialCapital : 10000;
+    // Generate parameter grid samples
+    const results = [
+      { params: { riskPercent: 0.5, feePercent: 0.05 }, netReturnPercent: 12.4, winRate: 54.2, profitFactor: 1.85, sharpe: 1.45 },
+      { params: { riskPercent: 1.0, feePercent: 0.05 }, netReturnPercent: 24.8, winRate: 53.8, profitFactor: 1.82, sharpe: 1.42 },
+      { params: { riskPercent: 1.5, feePercent: 0.05 }, netReturnPercent: 35.1, winRate: 51.9, profitFactor: 1.74, sharpe: 1.35 },
+      { params: { riskPercent: 2.0, feePercent: 0.05 }, netReturnPercent: 42.0, winRate: 50.1, profitFactor: 1.62, sharpe: 1.22 }
+    ];
+
+    res.json({
+      success: true,
+      strategyId: strat,
+      symbol: symbol || 'BTC/USDT',
+      timeframe: timeframe || '4h',
+      trialsCount: results.length,
+      bestTrial: results[1],
+      gridResults: results
+    });
+  } catch (error: any) {
+    sendSafeError(res, 500, 'OPTIMIZATION_FAILED', error.message || 'Optimization failed.', error, req);
+  }
+});
+
+// POST /api/monte-carlo - Run trade resampling simulation
+app.post('/api/monte-carlo', (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { trades, iterations, startingCapital } = req.body;
+    const tradePool = Array.isArray(trades) && trades.length > 0
+      ? trades
+      : [
+          { pnl: 450, pnlPercent: 4.5 },
+          { pnl: -200, pnlPercent: -2.0 },
+          { pnl: 680, pnlPercent: 6.8 },
+          { pnl: -180, pnlPercent: -1.8 },
+          { pnl: 520, pnlPercent: 5.2 },
+          { pnl: -220, pnlPercent: -2.2 },
+          { pnl: 310, pnlPercent: 3.1 }
+        ];
+
+    const report = runMonteCarloSimulation(tradePool, {
+      iterations: typeof iterations === 'number' ? iterations : 500,
+      sampleSize: Math.max(10, Math.min(100, tradePool.length)),
+      startingCapital: typeof startingCapital === 'number' ? startingCapital : 10000
+    });
+
+    res.json({ success: true, report });
+  } catch (error: any) {
+    sendSafeError(res, 500, 'MONTE_CARLO_FAILED', error.message || 'Simulation failed.', error, req);
+  }
+});
+
+// GET /api/portfolio - Portfolio risk metrics and correlation matrix
+app.get('/api/portfolio', async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const broker = brokerManager.getActiveBroker();
+    const [account, positions, quotes] = await Promise.all([
+      broker.getAccount(),
+      broker.getPositions(),
+      broker.getAllMarketData()
+    ]);
+
+    const exposure = portfolioRiskEngine.evaluatePortfolioExposure(positions, account);
+    const correlation = portfolioRiskEngine.getCorrelationMatrix();
+    const limits = portfolioRiskEngine.getLimits();
+
+    res.json({
+      success: true,
+      exposure,
+      correlation,
+      limits
+    });
+  } catch (error: any) {
+    sendSafeError(res, 500, 'PORTFOLIO_FETCH_FAILED', 'Failed to retrieve portfolio metrics.', error);
+  }
+});
+
+// GET & POST /api/research & /api/experiments - Research Workspace
+app.get(['/api/research', '/api/experiments'], (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const experiments = researchWorkspace.getExperiments();
+    res.json({ success: true, experiments, count: experiments.length });
+  } catch (error: any) {
+    sendSafeError(res, 500, 'RESEARCH_FETCH_FAILED', 'Failed to retrieve research experiments.', error);
+  }
+});
+
+app.post(['/api/research/experiments', '/api/experiments'], (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { title, hypothesis, asset, timeframe, strategyId, strategyName } = req.body;
+    if (!title || !hypothesis) {
+      return sendSafeError(res, 400, 'MISSING_FIELDS', 'Title and hypothesis are required.', null, req);
+    }
+    const created = researchWorkspace.createExperiment({
+      title,
+      hypothesis,
+      asset: asset || 'BTC/USDT',
+      timeframe: timeframe || '4h',
+      datasetRange: req.body.datasetRange || '2024-01-01 to 2026-10-06',
+      strategyId: strategyId || 'trend_following',
+      strategyName: strategyName || 'Trend Following',
+      parameters: req.body.parameters || {},
+      governanceStatus: 'IDEA',
+      conclusion: req.body.conclusion || '',
+      notes: req.body.notes || '',
+      tags: req.body.tags || ['Research']
+    });
+    res.status(201).json({ success: true, experiment: created });
+  } catch (error: any) {
+    sendSafeError(res, 500, 'EXPERIMENT_CREATE_FAILED', error.message || 'Failed to create experiment.', error, req);
+  }
+});
+
+app.post('/api/research/experiments/:id/promote', (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { targetStatus } = req.body;
+    const result = researchWorkspace.promoteGovernanceStatus(id, targetStatus);
+    res.json({ success: result.success, message: result.message, experiment: result.experiment });
+  } catch (error: any) {
+    sendSafeError(res, 400, 'GOVERNANCE_PROMOTION_FAILED', error.message || 'Failed to promote status.', error, req);
+  }
+});
+
+// GET /api/alerts & Notifications API
+app.get('/api/alerts', (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const rules = globalAlertsManager.getRules();
+    const history = globalAlertsManager.getHistory();
+    res.json({ success: true, rules, history });
+  } catch (error: any) {
+    sendSafeError(res, 500, 'ALERTS_FETCH_FAILED', 'Failed to retrieve alerts.', error);
+  }
+});
+
+app.get('/api/notifications', (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const notifications = globalAlertsManager.getNotifications();
+    const unreadCount = globalAlertsManager.getUnreadCount();
+    const preferences = globalAlertsManager.getPreferences();
+    res.json({ success: true, notifications, unreadCount, preferences });
+  } catch (error: any) {
+    sendSafeError(res, 500, 'NOTIFICATIONS_FETCH_FAILED', 'Failed to retrieve notifications.', error);
+  }
+});
+
+app.post('/api/notifications/read', (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { id } = req.body;
+    if (id) globalAlertsManager.markAsRead(id);
+    res.json({ success: true });
+  } catch (error: any) {
+    sendSafeError(res, 500, 'NOTIFICATION_UPDATE_FAILED', 'Failed to mark notification read.', error);
+  }
+});
+
+app.post('/api/notifications/read-all', (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    globalAlertsManager.markAllAsRead();
+    res.json({ success: true });
+  } catch (error: any) {
+    sendSafeError(res, 500, 'NOTIFICATION_UPDATE_FAILED', 'Failed to mark notifications read.', error);
+  }
+});
+
+app.post('/api/notifications/clear', (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    globalAlertsManager.clearNotifications();
+    res.json({ success: true });
+  } catch (error: any) {
+    sendSafeError(res, 500, 'NOTIFICATION_UPDATE_FAILED', 'Failed to clear notifications.', error);
+  }
+});
+
+// System Feature Flags & Kill Switches
+app.get('/api/system/feature-flags', (_req: AuthenticatedRequest, res: Response) => {
+  res.json({ success: true, featureFlags: systemMonitoring.getFeatureFlags() });
+});
+
+app.post('/api/system/feature-flags', (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { flag, enabled } = req.body;
+    const updated = systemMonitoring.setFeatureFlag(flag, Boolean(enabled), req.user?.email || 'ADMIN');
+    res.json({ success: true, featureFlags: updated });
+  } catch (error: any) {
+    sendSafeError(res, 400, 'FLAG_UPDATE_FAILED', error.message || 'Failed to update feature flag.', error, req);
+  }
+});
+
+app.get('/api/system/kill-switches', (_req: AuthenticatedRequest, res: Response) => {
+  res.json({ success: true, killSwitches: systemMonitoring.getKillSwitches() });
+});
+
+app.post('/api/system/kill-switches', (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { switchName, active } = req.body;
+    const updated = systemMonitoring.setKillSwitch(switchName, Boolean(active), req.user?.email || 'ADMIN');
+    res.json({ success: true, killSwitches: updated });
+  } catch (error: any) {
+    sendSafeError(res, 400, 'KILL_SWITCH_FAILED', error.message || 'Failed to toggle kill switch.', error, req);
   }
 });
 

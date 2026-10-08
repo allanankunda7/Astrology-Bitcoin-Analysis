@@ -63,7 +63,7 @@ export const INITIAL_WORLD_NEWS: NewsItem[] = [
     sentimentScore: 0.82,
     affectedAssets: ['XAU/USD', 'BTC/USDT'],
     marketImpact: 'Sovereign de-dollarization capital reallocation creates persistent structural demand floor under Gold Spot.',
-    causalMechanism: 'Asian central bank reserve diversification creates price-inelastic physical bullion bids, limiting pullbacks in XAU/USD above $2,650 support.'
+    causalMechanism: 'Asian central bank reserve diversification creates price-inelastic physical bullion bids, limiting pullbacks in XAU/USD above $4,100 support.'
   },
   {
     id: 'news-3',
